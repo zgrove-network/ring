@@ -1,0 +1,439 @@
+/* One screen. It does not explain itself: a label is one or two words, set
+   small and dark, and the number beside it is the point. Anything that needed
+   a sentence is either a figure instead or is not here. */
+
+:root {
+  --ground: #0f0e0f;
+  --panel: #151416;
+  --raised: #1c1b1d;
+  --line: #2b2a26;
+  --line-soft: #211f1d;
+
+  /* A real range rather than four greys in the middle of one. Ivory is the
+     brand's, and only the two figures that matter are allowed to use it. */
+  --bright: #f4f4f0;
+  --text: #b8b4ab;
+  --dim: #7a756c;
+  --faint: #5a564e;
+
+  --good: #8fae7e;
+  --bad: #c25b4e;
+  /* Sampled from the banner: its rings run a warm bone grey with no hue
+     in them at all, median #807c74, lit edges around #b1aa9f. */
+  --ring: #807c74;
+  --ring-lit: #b1aa9f;
+
+  /* Two faces with two jobs. Monospace is for data and nothing else, so a
+     figure is the only thing on the screen set in it and reads as a figure
+     without being told. Everything that is interface — labels, buttons,
+     headings — is the operating system's own text face, which is what native
+     software is set in and costs nothing to load. Setting the whole screen in
+     monospace was a costume: it is how you look technical rather than how you
+     are. */
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Cantarell, "Noto Sans", sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font: 13px/1.5 var(--ui);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+.good { color: var(--good); }
+.bad { color: var(--bad); }
+.bright { color: var(--bright); }
+.faint { color: var(--faint); }
+.live { color: var(--bright); }
+.grow { flex-grow: 1; }
+
+/* The label. Small, dark, uppercase, and never a sentence. */
+.k {
+  display: block;
+  font-size: 11px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.v {
+  display: block;
+  color: var(--text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.v.big { font-size: 20px; margin-top: 5px; color: var(--bright); }
+
+/* ---------------------------------------------------------------- shell */
+
+.app { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.body { display: grid; grid-template-columns: minmax(0, 1fr) 320px; min-height: 0; }
+
+.main-col {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(232px, auto) minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+}
+
+/* --------------------------------------------------------------- topbar */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 0 18px;
+  height: 46px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.mark { flex-shrink: 0; color: var(--bright); display: block; }
+.wordmark { color: var(--bright); font-weight: 500; }
+.tb { display: flex; align-items: baseline; gap: 7px; }
+.tb .k { display: inline; }
+
+.badge {
+  padding: 3px 8px;
+  border: 1px solid #4a2f2b;
+  color: #b8675c;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- stage */
+
+/* The box is the product, so it is allowed to be the loudest thing here
+   even in a screen this dense. Everything else in the row is a figure at a
+   fifth of its size. */
+.stage {
+  position: relative;
+  overflow: hidden;
+  padding: 34px 22px 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Right-anchored and fading left, the way the brand's trunk does. */
+.rings {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(54%, 660px);
+  height: 100%;
+  pointer-events: none;
+}
+
+.stage-grid {
+  position: relative;
+  display: grid;
+  /* Hero and its figures group on the left; the clock is pushed right and
+     the gap that opens between them lands on the densest part of the rings. */
+  grid-template-columns: auto repeat(3, auto) minmax(24px, 1fr) auto;
+  align-items: end;
+  gap: 0 36px;
+}
+
+.hero .k { margin-bottom: 4px; }
+
+.figure {
+  display: block;
+  font-family: var(--mono);
+  font-size: clamp(52px, 7vw, 92px);
+  line-height: 1;
+  color: var(--bright);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.figure.waiting { color: #5c5850; letter-spacing: 0.1em; }
+.figure.hit { color: var(--good); }
+.figure.mid { font-size: 26px; }
+.caret { animation: blink 1.1s steps(1, end) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.clock-cell { grid-column: 6; text-align: right; }
+.clock {
+  display: block;
+  font-family: var(--mono);
+  margin-top: 3px;
+  font-size: clamp(26px, 3vw, 36px);
+  line-height: 1;
+  color: var(--bright);
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px var(--ground), 0 0 6px var(--ground);
+}
+.clock.soon { color: var(--bad); }
+
+.demand { position: relative; margin-top: 26px; }
+.demand-bar { position: relative; height: 4px; background: var(--raised); }
+.demand-bar > span { display: block; height: 100%; background: var(--dim); transition: width 240ms linear; }
+.demand-bar > i { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--text); }
+
+/* -------------------------------------------------------------- history */
+
+.history { border-top: 1px solid var(--line); overflow: auto; min-height: 0; }
+.history table { width: 100%; border-collapse: collapse; }
+
+.history th {
+  position: sticky;
+  top: 0;
+  background: var(--ground);
+  text-align: right;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--faint);
+  padding: 8px 22px 7px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.history td {
+  text-align: right;
+  padding: 5px 22px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--dim);
+}
+/* What the eye runs down. Everything else in the row is context for it. */
+.history td:last-child { color: var(--text); }
+.history td:nth-child(2) { color: var(--text); }
+.history td.dim { color: #55514a; }
+.history td.good { color: var(--good); }
+.history td.bad { color: var(--bad); }
+/* A rule every fifth round, so forty of them are countable rather than a
+   single grey field. */
+.history tbody tr:nth-child(5n) td { border-bottom: 1px solid var(--line-soft); }
+.history th:first-child, .history td:first-child { text-align: left; }
+.history tbody tr:hover td { background: var(--panel); }
+.fresh td { animation: land 1100ms ease-out; }
+@keyframes land { from { background: #23221d; color: var(--bright); } }
+
+/* --------------------------------------------------------------- panels */
+
+.panel { padding: 18px; border-bottom: 1px solid var(--line); min-height: 0; }
+.panel:last-child { border-bottom: 0; }
+.account { background: var(--ground); }
+
+.panel h2 {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dim);
+}
+
+.box {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  padding: 9px 12px;
+}
+.box:focus-within { border-color: var(--dim); }
+.box input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--bright);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  padding: 0;
+}
+.box input::placeholder { color: #45413b; }
+.unit { color: var(--dim); font-size: 11px; }
+
+.quick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.quick button { padding: 6px 10px; min-height: 40px; text-align: left; }
+.quick .v { font-size: 13px; margin-top: 1px; }
+.quick .k { font-size: 11px; }
+
+/* Label left, figure right, one line each. Everything the rail says. */
+.rows { display: grid; grid-template-columns: 1fr auto; gap: 1px 16px; margin: 16px 0; }
+.rows dt {
+  font-size: 11px;
+  color: var(--faint);
+  align-self: center;
+}
+.rows dd { margin: 0; text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------- buttons */
+
+button {
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  font: inherit;
+  padding: 9px 14px;
+  min-height: 44px;
+  cursor: pointer;
+}
+button:hover { color: var(--bright); border-color: var(--dim); }
+button:focus-visible { outline: 1px solid var(--dim); outline-offset: 2px; }
+
+button.primary {
+  width: 100%;
+  background: #22302a;
+  border-color: #3d5343;
+  color: #d3e3c9;
+  font-size: 12px;
+  font-weight: 500;
+}
+button.primary:hover { background: #2a3b32; border-color: var(--good); color: var(--bright); }
+button.primary:disabled {
+  background: transparent;
+  border-color: var(--line-soft);
+  color: #33302c;
+  cursor: default;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+  padding: 4px 8px;
+  min-height: 30px;
+}
+button.ghost:hover { color: var(--bright); border-color: var(--line); }
+
+/* ------------------------------------------------------------ statusbar */
+
+.statusbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 32px;
+  padding: 12px 22px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+.chart-cell { display: grid; gap: 7px; min-width: 0; }
+
+.spark { display: flex; align-items: flex-end; gap: 2px; height: 30px; }
+.spark-bar { flex: 1 1 0; min-width: 0; background: #34322d; }
+.spark-bar.block { background: var(--good); }
+
+.figures { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; }
+.figures dt {
+  font-size: 11px;
+  color: var(--faint);
+}
+.figures dd { margin: 3px 0 0; font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ---------------------------------------------------------------- narrow */
+
+@media (max-width: 940px) {
+  body { overflow: auto; }
+  .app { height: auto; min-height: 100dvh; }
+  .body { grid-template-columns: minmax(0, 1fr); }
+  .main-col { border-right: 0; }
+  .rail { border-top: 1px solid var(--line); }
+  .history { max-height: 60vh; }
+  .statusbar { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 620px) {
+  .stage-grid { grid-template-columns: minmax(0, 1fr) auto; gap: 18px 24px; }
+  .hero, .clock-cell { grid-column: span 2; text-align: left; }
+  .clock-cell { grid-column: 1 / -1; }
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 14px; gap: 6px 16px; }
+  .grow { display: none; }
+  .history th, .history td { padding-left: 14px; padding-right: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .caret, .fresh td, .demand-bar > span { animation: none; transition: none; }
+}
+
+/* ------------------------------------------------------- ring additions */
+
+.under { color: var(--good); }
+.over { color: var(--bad); }
+.badge.live { border-color: #2f4a35; color: #8fae7e; }
+
+.v.big.sealed { color: #4d4a44; letter-spacing: 0.06em; }
+.clock.under { color: var(--good); }
+.clock.faint { color: var(--faint); }
+.clock.under, .clock.faint { font-size: clamp(20px, 2.2vw, 28px); }
+
+/* The outcomes. Recent share sits beside each name, because it is the only
+   number a viewer has to price with — what the pool is paying is sealed. */
+.miners { display: grid; gap: 4px; margin-bottom: 10px; }
+.miner {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2ch;
+  padding: 7px 11px;
+  min-height: 38px;
+  text-align: left;
+}
+.miner .name { color: var(--text); }
+.miner .share { color: var(--faint); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.miner.picked { border-color: #3c5142; background: #1c2620; }
+.miner.picked .name { color: var(--bright); }
+.miner.picked .share { color: var(--good); }
+
+.sealed-box .figure.mid { font-size: 22px; }
+
+/* Share of the last blocks, one strip per outcome, sized by share. */
+.shares { display: flex; gap: 3px; height: 34px; }
+.share-row { display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; gap: 4px; }
+.share-bar { display: block; height: 14px; background: #34322d; }
+.share-row.lit .share-bar { background: var(--good); }
+.share-name {
+  font-size: 10px;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-row.lit .share-name { color: var(--good); }
+
+/* The three states a position passes through. The middle one carries the
+   whole integrity argument, so it gets a line of its own rather than a word
+   in a table. */
+.steps { list-style: none; margin: 14px 0 16px; padding: 0; display: grid; gap: 1px; }
+.steps li {
+  display: flex;
+  justify-content: space-between;
+  gap: 2ch;
+  padding: 6px 0 6px 14px;
+  border-left: 1px solid var(--line);
+  position: relative;
+}
+.steps li::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 12px;
+  width: 5px;
+  height: 5px;
+  background: var(--line);
+}
+.steps li.done::before { background: var(--dim); }
+.steps li.now::before { background: var(--good); }
+.steps li.now { border-left-color: var(--good); }
+.step-k { font-size: 11px; color: var(--faint); }
+.steps li.now .step-k { color: var(--dim); }
+.step-v { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+.steps li.now .step-v { color: var(--bright); }
+
+.history .empty { margin: 0; padding: 22px; color: var(--dim); }

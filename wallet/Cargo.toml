@@ -1,0 +1,26 @@
+[package]
+name = "ring-wallet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Reads positions out of the chain. Positions arrive as shielded payments
+# carrying a memo, so the sender is not on the chain and cannot be. That is the
+# point, and it is also why this exists: only a viewing key can read them.
+
+[dependencies]
+zcash_client_backend = { version = "0.24", features = [
+    "sync",
+    "lightwalletd-tonic-tls-webpki-roots",
+    "lightwalletd-tonic-transport",
+    "orchard",
+] }
+zcash_client_sqlite = { version = "0.22", features = ["unstable"] }
+zcash_keys = { version = "0.16", features = ["orchard", "sapling"] }
+zcash_protocol = "0.10"
+zcash_primitives = "0.30"
+zip32 = "0.2"
+bip0039 = { version = "0.12", features = ["all-languages"] }
+rand = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"

@@ -1,0 +1,4 @@
+node_modules/
+dist/
+wallet/target/
+.DS_Store
