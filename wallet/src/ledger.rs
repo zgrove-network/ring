@@ -43,7 +43,10 @@ impl Ledger {
              CREATE TABLE IF NOT EXISTS depositor (
                address_index INTEGER PRIMARY KEY,
                label         TEXT    NOT NULL,
-               created_at    INTEGER NOT NULL
+               created_at    INTEGER NOT NULL,
+               -- The hash, never the token. A copy of this file is then a
+               -- record of who is owed what, and not a way to collect it.
+               token_hash    TEXT    NOT NULL UNIQUE
              );
 
              CREATE TABLE IF NOT EXISTS deposit (
@@ -138,15 +141,48 @@ impl Ledger {
         Ok(changed == 1)
     }
 
-    pub fn assign(&self, address_index: u32, label: &str, at: i64) -> Result<()> {
-        self.db
-            .execute(
-                "INSERT OR IGNORE INTO depositor (address_index, label, created_at)
-                 VALUES (?1, ?2, ?3)",
-                params![address_index, label, at],
+    /// Takes the next free address index for a newcomer.
+    ///
+    /// The token is the only handle they have: there are no accounts here and
+    /// nothing is asked of them, which is the point. It is stored hashed, so
+    /// this file records who is owed what without being a way to collect it.
+    pub fn claim(&mut self, label: &str, token: &str, at: i64) -> Result<u32> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        // The next index, read and written together. Two newcomers arriving
+        // at once must not be handed the same address, or their money lands
+        // in one pile with no way to separate it again.
+        let next: u32 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(address_index) + 1, 0) FROM depositor",
+                [],
+                |r| r.get(0),
             )
-            .context("assigning an address")?;
-        Ok(())
+            .unwrap_or(0);
+
+        tx.execute(
+            "INSERT INTO depositor (address_index, label, created_at, token_hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![next, label, at, digest(token)],
+        )
+        .context("that token is already in use")?;
+        tx.commit()?;
+        Ok(next)
+    }
+
+    /// Which address a token speaks for, if any.
+    pub fn resolve(&self, token: &str) -> Result<Option<u32>> {
+        let found = self
+            .db
+            .query_row(
+                "SELECT address_index FROM depositor WHERE token_hash = ?1",
+                params![digest(token)],
+                |r| r.get(0),
+            )
+            .ok();
+        Ok(found)
     }
 
     /// What each depositor has put in, deepest first.
@@ -340,6 +376,21 @@ impl Ledger {
         }
         Ok(())
     }
+}
+
+/// A token is never stored, only this.
+fn digest(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    // Domain-separated, so a hash from here cannot be replayed as a hash of
+    // anything else this project ever stores.
+    hasher.update(b"zgrove-ring depositor token v1\n");
+    hasher.update(token.as_bytes());
+    hex(&hasher.finalize())
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The house's cut of what the losing side staked, in hundredths.
@@ -738,6 +789,66 @@ mod tests {
         assert_eq!(settled.rake, 0, "the house takes nothing");
         assert_eq!(ledger.available(0).unwrap(), 1000);
         assert_eq!(ledger.available(1).unwrap(), 1000);
+    }
+
+    #[test]
+    fn newcomers_get_their_own_address_and_the_token_is_not_stored() {
+        let mut ledger = book();
+        assert_eq!(ledger.claim("first", "token-aaa", 0).unwrap(), 0);
+        assert_eq!(ledger.claim("second", "token-bbb", 0).unwrap(), 1);
+        assert_eq!(ledger.claim("third", "token-ccc", 0).unwrap(), 2);
+
+        assert_eq!(ledger.resolve("token-bbb").unwrap(), Some(1));
+        assert_eq!(ledger.resolve("token-nobody").unwrap(), None);
+
+        // A copy of the file must not be a way to collect anyone's balance.
+        let stored: String = ledger
+            .db
+            .query_row("SELECT token_hash FROM depositor WHERE address_index = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_ne!(stored, "token-bbb");
+        assert!(!stored.contains("token"), "the token itself is in the file");
+        assert_eq!(stored.len(), 64, "a sha256, written out");
+    }
+
+    #[test]
+    fn two_newcomers_are_never_handed_the_same_address() {
+        // Their money would land in one pile with no way to separate it.
+        let mut ledger = book();
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..200 {
+            let index = ledger.claim(&format!("p{n}"), &format!("token-{n}"), 0).unwrap();
+            assert!(seen.insert(index), "address {index} handed out twice");
+        }
+        assert_eq!(seen.len(), 200);
+    }
+
+    #[test]
+    fn an_address_is_never_handed_out_again_after_a_depositor_goes() {
+        // Rows do get removed — a mistaken claim, a cleanup, a migration. An
+        // index derived from how many rows there are would then point at an
+        // address that has already been published and may already hold
+        // somebody's money, and the next newcomer would inherit it.
+        let mut ledger = book();
+        ledger.claim("first", "token-a", 0).unwrap();
+        let second = ledger.claim("second", "token-b", 0).unwrap();
+        ledger.claim("third", "token-c", 0).unwrap();
+
+        ledger
+            .db
+            .execute("DELETE FROM depositor WHERE address_index = ?1", params![second])
+            .unwrap();
+
+        let next = ledger.claim("fourth", "token-d", 0).unwrap();
+        assert_eq!(next, 3, "carried on past the gap rather than filling it");
+        assert_ne!(next, second);
+    }
+
+    #[test]
+    fn a_token_cannot_be_registered_twice() {
+        let mut ledger = book();
+        ledger.claim("first", "same-token", 0).unwrap();
+        assert!(ledger.claim("second", "same-token", 0).is_err());
     }
 
     #[test]

@@ -29,6 +29,7 @@ zcash_note_encryption = "0.4"
 zcash_proofs = { version = "0.30", features = ["local-prover", "download-params"] }
 bip0039 = { version = "0.12", features = ["all-languages"] }
 rand = "0.8"
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
 # The same version zcash_client_sqlite links, so there is one SQLite.
