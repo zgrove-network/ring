@@ -18,7 +18,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar height={tip} source={state.source} />
+      <TopBar height={tip} source={state.source} ageSeconds={state.ageSeconds} />
 
       <main className="body">
         <div className="main-col">

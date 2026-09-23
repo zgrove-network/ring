@@ -4,9 +4,10 @@ import type { Source } from "../hooks/useMarket";
 interface Props {
   readonly height: number | null;
   readonly source: Source;
+  readonly ageSeconds: number;
 }
 
-export function TopBar({ height, source }: Props) {
+export function TopBar({ height, source, ageSeconds }: Props) {
   return (
     <header className="topbar">
       <Mark />
@@ -20,11 +21,16 @@ export function TopBar({ height, source }: Props) {
       <span className="grow" />
 
       <span className={source === "chain" ? "badge live" : "badge"}>
-        {source === "chain" ? "zcash mainnet" : "explorer offline"}
+        {source === "chain"
+          ? "zcash mainnet"
+          : source === "stale"
+            ? `mainnet · ${Math.round(ageSeconds / 60) || 1}m old`
+            : "explorer offline"}
       </span>
-      <span className="tb">
-        <span className="k">counterparties</span>
-        <span className="v">simulated</span>
+      {/* "simulated counterparties" could be read as "the others are bots but
+          my money is real". It is not: nothing here touches a wallet. */}
+      <span className="badge sim" title="No wallet is connected and no payment is made. The blocks are real; the stakes are not.">
+        simulation · no real money
       </span>
     </header>
   );

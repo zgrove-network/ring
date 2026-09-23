@@ -23,6 +23,13 @@ export function Account({ balance, session, hits, staked }: Props) {
           {hits}/{staked}
         </dd>
       </dl>
+
+      {/* A balance beside live chain data reads as an account somebody is
+          holding for you. Nobody is. */}
+      <p className="note">
+        Play money. This figure lives in your browser and nowhere else — no
+        wallet is connected and nothing is ever sent.
+      </p>
     </section>
   );
 }

@@ -14,10 +14,12 @@ import {
  * hammering a service we do not own. */
 const POLL_MS = 12_000;
 
-export type Source = "chain" | "offline";
+export type Source = "chain" | "stale" | "offline";
 
 export interface MarketState {
   readonly source: Source;
+  /** How old the blocks behind the market are, in seconds. */
+  readonly ageSeconds: number;
   readonly blocks: readonly Block[];
   readonly rounds: readonly Round[];
   readonly position: Position | null;
@@ -52,6 +54,7 @@ export function useMarket() {
   const [staked, setStaked] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [source, setSource] = useState<Source>("offline");
+  const [ageSeconds, setAgeSeconds] = useState(0);
 
   const positionRef = useRef<Position | null>(null);
   positionRef.current = position;
@@ -128,10 +131,11 @@ export function useMarket() {
 
     async function pull() {
       try {
-        const fresh = await recentBlocks();
+        const reading = await recentBlocks();
         if (!alive) return;
-        absorb(fresh);
-        setSource("chain");
+        absorb(reading.blocks);
+        setAgeSeconds(reading.ageSeconds);
+        setSource(reading.stale ? "stale" : "chain");
       } catch {
         if (!alive) return;
         setSource("offline");
@@ -165,6 +169,7 @@ export function useMarket() {
 
   const state: MarketState = {
     source,
+    ageSeconds,
     blocks,
     rounds,
     position,

@@ -437,3 +437,16 @@ button.ghost:hover { color: var(--bright); border-color: var(--line); }
 .steps li.now .step-v { color: var(--bright); }
 
 .history .empty { margin: 0; padding: 22px; color: var(--dim); }
+
+/* Said plainly and kept visible. A page showing a balance and live chain data
+   is easy to mistake for one that takes deposits; it takes none. */
+.badge.sim {
+  border-color: #6b5a3a;
+  color: #c8a765;
+}
+.account .note {
+  font-size: 11px;
+  color: var(--dim, #7a756c);
+  margin: 2px 0 0;
+  line-height: 1.5;
+}

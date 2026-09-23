@@ -6,7 +6,10 @@
  * fifteen cents it would take to shove a shielded-pool number around. That
  * asymmetry is the reason this is the question and not another one. */
 
-const SOURCE = "https://api.blockchair.com/zcash/blocks";
+/** Our own endpoint, which fetches the explorer once for every visitor at
+ * once and keeps the last good answer when it fails. Overridable so a plain
+ * `vite dev` can still talk to the explorer directly. */
+const SOURCE = import.meta.env["VITE_CHAIN_SOURCE"] ?? "/api/blocks";
 
 /** Zcash aims for a block every 75 seconds. */
 export const TARGET_SECONDS = 75;
@@ -102,7 +105,19 @@ function parse(rows: readonly Raw[]): readonly Block[] {
  * rather than a short page, so asking for more loses every block. */
 export const MAX_LIMIT = 100;
 
-export async function recentBlocks(limit = MAX_LIMIT): Promise<readonly Block[]> {
+/** Blocks, and how old the answer behind them is.
+ *
+ * The endpoint keeps serving the last good answer when the explorer fails,
+ * which is the right call — old blocks are still true. But then the page has
+ * to say so, or it shows a market drawn from twelve-minute-old data while
+ * looking exactly as live as it did a minute ago. */
+export interface BlockReading {
+  readonly blocks: readonly Block[];
+  readonly ageSeconds: number;
+  readonly stale: boolean;
+}
+
+export async function recentBlocks(limit = MAX_LIMIT): Promise<BlockReading> {
   const capped = Math.min(limit, MAX_LIMIT);
   const url = `${SOURCE}?limit=${capped}&fields=id,time,coinbase_data_hex,guessed_miner`;
   const response = await fetch(url);
@@ -110,5 +125,9 @@ export async function recentBlocks(limit = MAX_LIMIT): Promise<readonly Block[]>
   const body: unknown = await response.json();
   const data = (body as { data?: readonly Raw[] }).data;
   if (data === undefined) throw new Error("explorer returned no blocks");
-  return parse(data);
+  return {
+    blocks: parse(data),
+    ageSeconds: Number(response.headers.get("x-data-age-seconds") ?? "0"),
+    stale: response.headers.get("x-data-stale") === "true",
+  };
 }
