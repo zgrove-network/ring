@@ -1,9 +1,9 @@
-# zgrove-ring
+# ring
 
 A market on Zcash blocks, and the wallet that would read positions out of the
 chain.
 
-Ring is the companion to [zGrove](https://github.com/quietmint-tech/zgrove),
+Ring is the companion to [zGrove](https://github.com/zgrove-network/zgrove),
 the mining pool that pays contributors in shielded ZEC. The pool is for people
 with a GPU. This is for everyone else.
 
