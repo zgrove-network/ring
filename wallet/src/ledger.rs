@@ -87,6 +87,11 @@ impl Ledger {
     fn create_tables(&self) -> Result<()> {
         self.db.execute_batch(
             "PRAGMA journal_mode = WAL;
+             -- Three processes write here: the API takes bets, the scanner
+             -- records deposits, the closer pays rounds. Without this the
+             -- second one to arrive fails immediately with \"database is
+             -- locked\" instead of waiting the moment it takes.
+             PRAGMA busy_timeout = 10000;
              -- A payout is decided from these rows, so a write that is
              -- acknowledged has to survive the power going out.
              PRAGMA synchronous = FULL;

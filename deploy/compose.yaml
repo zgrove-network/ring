@@ -1,0 +1,53 @@
+# Ring beside the pool on one box. They share a machine and nothing else: no
+# code, no database, no repository. What they do share is Caddy, which needs
+# to reach this from its own network.
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - serve
+      - --ufvk
+      - ${RING_UFVK:?set RING_UFVK in .env}
+      - --data
+      - /data
+      - --bind
+      - 0.0.0.0:5321
+    volumes:
+      - ring-data:/data
+    expose:
+      - "5321"
+    restart: unless-stopped
+    networks: [default, zgrove]
+
+  # Reads the chain and closes what the chain has decided. Separate from the
+  # API so that a sync that wedges cannot take balances offline with it.
+  keeper:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          ring-wallet scan --ufvk "$$RING_UFVK" --birthday "$$RING_BIRTHDAY" --data /data || true
+          ring-wallet close --data /data || true
+          sleep 60
+        done
+    environment:
+      RING_UFVK: ${RING_UFVK:?set RING_UFVK in .env}
+      RING_BIRTHDAY: ${RING_BIRTHDAY:?set RING_BIRTHDAY in .env}
+    volumes:
+      - ring-data:/data
+    restart: unless-stopped
+
+volumes:
+  ring-data:
+
+networks:
+  # Caddy lives in the pool's compose project, so this joins its network
+  # rather than starting a second one.
+  zgrove:
+    external: true
+    name: deploy_default
