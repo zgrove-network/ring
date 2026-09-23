@@ -30,7 +30,11 @@ zcash_proofs = { version = "0.30", features = ["local-prover", "download-params"
 bip0039 = { version = "0.12", features = ["all-languages"] }
 rand = "0.8"
 sha2 = "0.10"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+# Money passes through this surface, so it is not hand-rolled.
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 anyhow = "1"
 # The same version zcash_client_sqlite links, so there is one SQLite.
 rusqlite = { version = "0.37", features = ["bundled"] }

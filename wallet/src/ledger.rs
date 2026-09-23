@@ -33,7 +33,58 @@ impl Ledger {
         Ok(ledger)
     }
 
+    /// Brings a ledger up to the shape this build expects.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` does nothing at all to a table that
+    /// already exists in an older shape, so a new column simply never
+    /// appears and the first write that needs it fails with an error about
+    /// something else. Found exactly that way. The version is recorded, and
+    /// each step runs once.
     fn prepare(&self) -> Result<()> {
+        let version: u32 =
+            self.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+
+        if version > SCHEMA_VERSION {
+            anyhow::bail!(
+                "this ledger was written by a newer build (schema {version}, this one knows {SCHEMA_VERSION}); \
+                 running an older build against it could write rows it cannot read back"
+            );
+        }
+
+        self.create_tables()?;
+
+        if version < 2 {
+            // The token a depositor holds, stored hashed.
+            if !self.has_column("depositor", "token_hash")? {
+                self.db.execute_batch(
+                    "ALTER TABLE depositor ADD COLUMN token_hash TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            self.db.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS depositor_by_token
+                   ON depositor (token_hash);",
+            )?;
+        }
+
+        self.db
+            .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+        Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut q = self.db.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut found = false;
+        let mut rows = q.query([])?;
+        while let Some(row) = rows.next()? {
+            let name: String = row.get(1)?;
+            if name == column {
+                found = true;
+            }
+        }
+        Ok(found)
+    }
+
+    fn create_tables(&self) -> Result<()> {
         self.db.execute_batch(
             "PRAGMA journal_mode = WAL;
              -- A payout is decided from these rows, so a write that is
@@ -43,10 +94,7 @@ impl Ledger {
              CREATE TABLE IF NOT EXISTS depositor (
                address_index INTEGER PRIMARY KEY,
                label         TEXT    NOT NULL,
-               created_at    INTEGER NOT NULL,
-               -- The hash, never the token. A copy of this file is then a
-               -- record of who is owed what, and not a way to collect it.
-               token_hash    TEXT    NOT NULL UNIQUE
+               created_at    INTEGER NOT NULL
              );
 
              CREATE TABLE IF NOT EXISTS deposit (
@@ -154,9 +202,19 @@ impl Ledger {
         // The next index, read and written together. Two newcomers arriving
         // at once must not be handed the same address, or their money lands
         // in one pile with no way to separate it again.
+        //
+        // Past the deposits as well as past the claims. An address can hold
+        // money without ever having been claimed — a rebuilt book, an address
+        // published by hand, a scan that ran before anyone joined — and
+        // handing that one out gives a stranger somebody else's balance.
         let next: u32 = tx
             .query_row(
-                "SELECT COALESCE(MAX(address_index) + 1, 0) FROM depositor",
+                "SELECT MAX(n) FROM (
+                   SELECT COALESCE(MAX(address_index) + 1, 0) AS n FROM depositor
+                   UNION ALL
+                   SELECT COALESCE(MAX(address_index) + 1, 0) AS n FROM deposit
+                                    WHERE address_index < 4294967295
+                 )",
                 [],
                 |r| r.get(0),
             )
@@ -167,7 +225,9 @@ impl Ledger {
              VALUES (?1, ?2, ?3, ?4)",
             params![next, label, at, digest(token)],
         )
-        .context("that token is already in use")?;
+        // Was "that token is already in use", which was a guess about the
+        // cause dressed as a fact, and it hid the real one.
+        .with_context(|| format!("claiming address {next}"))?;
         tx.commit()?;
         Ok(next)
     }
@@ -377,6 +437,9 @@ impl Ledger {
         Ok(())
     }
 }
+
+/// What shape this build expects the ledger to be in.
+const SCHEMA_VERSION: u32 = 2;
 
 /// A token is never stored, only this.
 fn digest(token: &str) -> String {
@@ -842,6 +905,59 @@ mod tests {
         let next = ledger.claim("fourth", "token-d", 0).unwrap();
         assert_eq!(next, 3, "carried on past the gap rather than filling it");
         assert_ne!(next, second);
+    }
+
+    #[test]
+    fn an_older_ledger_is_brought_forward_rather_than_failing_oddly() {
+        // The shape before the token column existed. Opening it used to leave
+        // the column missing and the first claim failed complaining about
+        // something else entirely.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE depositor (
+               address_index INTEGER PRIMARY KEY,
+               label         TEXT    NOT NULL,
+               created_at    INTEGER NOT NULL
+             );
+             INSERT INTO depositor VALUES (0, 'old', 1);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+
+        let mut ledger = Ledger { db };
+        ledger.prepare().unwrap();
+
+        // The old row survives, and a newcomer can still be taken on.
+        let next = ledger.claim("newcomer", "token-a", 0).unwrap();
+        assert_eq!(next, 1, "past the depositor already there");
+        assert_eq!(ledger.resolve("token-a").unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_ledger_from_a_newer_build_is_refused_rather_than_written_to() {
+        // Writing rows an older build cannot read back is how a book starts
+        // disagreeing with itself.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA user_version = 99;").unwrap();
+        let ledger = Ledger { db };
+        let refused = ledger.prepare();
+        assert!(refused.is_err());
+        assert!(format!("{}", refused.unwrap_err()).contains("newer build"));
+    }
+
+    #[test]
+    fn a_newcomer_never_inherits_an_address_that_already_holds_money() {
+        // A book can be rebuilt from the chain before anyone has joined, so
+        // deposits can exist at indices no one ever claimed. Counting only
+        // the claims would hand the first newcomer a balance that is not
+        // theirs.
+        let mut ledger = book();
+        fund(&ledger, 0, 11_000_000);
+        fund(&ledger, 1, 500_000);
+
+        let first = ledger.claim("newcomer", "token-a", 0).unwrap();
+        assert_eq!(first, 2, "past the deposits, not into them");
+        assert_eq!(ledger.available(first).unwrap(), 0, "and starts at nothing");
     }
 
     #[test]

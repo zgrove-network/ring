@@ -1,5 +1,6 @@
 mod cache;
 mod ledger;
+mod serve;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
@@ -93,7 +94,7 @@ fn endpoint(network: &Network) -> &'static str {
 /// unlimited supply of addresses, all spendable by the same wallet, and
 /// nobody outside can tell that two of them belong together. So the address
 /// itself can say who paid, without the payer having to write anything.
-fn derive(ufvk: &UnifiedFullViewingKey, index: u32) -> Result<(UnifiedAddress, u32)> {
+pub fn derive(ufvk: &UnifiedFullViewingKey, index: u32) -> Result<(UnifiedAddress, u32)> {
     let j = DiversifierIndex::from(index);
     let (address, found) = ufvk
         .find_address(j, UnifiedAddressRequest::AllAvailableKeys)
@@ -383,7 +384,7 @@ async fn main() -> Result<()> {
         .find(|a| {
             matches!(
                 a.as_str(),
-                "new" | "scan" | "send" | "address" | "balances" | "withdraw" | "pay"
+                "new" | "scan" | "send" | "address" | "balances" | "withdraw" | "pay" | "serve"
             )
         })
         .map(String::as_str);
@@ -399,6 +400,12 @@ async fn main() -> Result<()> {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
             let addresses: u32 = flag("--addresses").unwrap_or_else(|| "64".into()).parse()?;
             scan(&network, &ufvk, birthday, addresses, PathBuf::from(data)).await
+        }
+        Some("serve") => {
+            let ufvk = flag("--ufvk").ok_or_else(|| anyhow!("--ufvk is required"))?;
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            let bind = flag("--bind").unwrap_or_else(|| "127.0.0.1:5321".into());
+            serve::run(network, &ufvk, PathBuf::from(data), &bind).await
         }
         Some("withdraw") => {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
