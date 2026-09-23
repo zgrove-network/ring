@@ -19,7 +19,7 @@ const POLL_MS = 12_000;
 export type Source = "chain" | "stale" | "offline";
 
 /** Whether the balances on screen are the ledger's or this tab's. */
-export type Money = "simulated" | "ledger" | "unreachable";
+export type Money = "simulated" | "ledger" | "unreachable" | "stranger";
 
 export interface MarketState {
   readonly source: Source;
@@ -196,14 +196,39 @@ export function useMarket() {
         setNetwork(standing.network);
         setUnit(standing.unit);
         setMoney("ledger");
-      } catch {
-        if (alive) setMoney("unreachable");
+      } catch (cause) {
+        if (!alive) return;
+        // A ledger that does not know this token is not a ledger that is
+        // down. One means start again; the other means wait.
+        setMoney(cause instanceof api.TokenNotKnown ? "stranger" : "unreachable");
       }
     })();
 
     return () => {
       alive = false;
     };
+  }, []);
+
+  /** Throws away a token the ledger does not know and takes a new one.
+   *
+   * Whatever that token held is not recoverable from here, so it is a button
+   * somebody presses rather than something that happens quietly. */
+  const startOver = useCallback(async () => {
+    api.forget();
+    const joined = await api.join();
+    setBalance(0);
+    setDepositAddress(joined.address);
+    setNetwork(joined.network);
+    setUnit(joined.unit);
+    setMoney("ledger");
+  }, []);
+
+  /** Asks for money back. The balance drops here; the payment is made by
+   * hand from a machine that holds the spending key, so it is not instant
+   * and the interface has to say so rather than implying a transfer. */
+  const cashOut = useCallback(async (zatoshi: number, to: string) => {
+    const standing = await api.withdraw(zatoshi, to);
+    setBalance(standing.available / 1e8);
   }, []);
 
   /** Commits a stake. Which round it joins is not ours to say. */
@@ -243,5 +268,5 @@ export function useMarket() {
     elapsed,
   };
 
-  return { state, shares, pools, take };
+  return { state, shares, pools, take, cashOut, startOver };
 }

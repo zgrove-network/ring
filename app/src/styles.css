@@ -506,3 +506,23 @@ button.ghost:hover { color: var(--bright); border-color: var(--line); }
 }
 .account .deposit .copy:hover { color: var(--bright); border-color: var(--dim); }
 .account .copy:hover { color: var(--bright); border-color: var(--dim); }
+
+/* Nothing takes a deposit without showing the way out on the same panel. */
+.account .cash-out { width: 100%; margin-top: 10px; font-size: 12px; }
+.account .cash-out-form { margin-top: 10px; display: grid; gap: 2px; }
+.account .cash-out-form label { font-size: 11px; color: var(--faint); }
+.account .cash-out-form label::before { content: ""; }
+.account .cash-out-form input {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--bright);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 0;
+  margin-bottom: 6px;
+  border-radius: 0;
+}
+.account .cash-out-form input:focus { outline: none; border-bottom-color: var(--dim); }
+.account .cash-out-form button { width: 100%; margin-top: 6px; font-size: 12px; }

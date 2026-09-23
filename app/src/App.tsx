@@ -9,7 +9,7 @@ import { TopBar } from "./components/TopBar";
 import { useMarket } from "./hooks/useMarket";
 
 export default function App() {
-  const { state, shares, pools, take } = useMarket();
+  const { state, shares, pools, take, cashOut, startOver } = useMarket();
   const [picked, setPicked] = useState<string | null>(null);
 
   const tip = state.blocks[0]?.height ?? null;
@@ -56,6 +56,8 @@ export default function App() {
             depositAddress={state.depositAddress}
             network={state.network}
             unit={state.unit}
+            cashOut={cashOut}
+            startOver={startOver}
             balance={state.balance}
             session={state.session}
             hits={state.hits}

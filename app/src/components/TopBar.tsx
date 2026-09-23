@@ -29,10 +29,9 @@ export function TopBar({ height, source, ageSeconds, money, network }: Props) {
             ? `mainnet · ${Math.round(ageSeconds / 60) || 1}m old`
             : "explorer offline"}
       </span>
-      {/* Whichever of these is true has to be the one on screen. A page
-          showing a balance is read as an account somebody is holding, and
-          saying "no real money" while holding real money is the worse of the
-          two lies. */}
+      {/* A badge is a warning, so there is one only when something needs
+          saying. The ordinary case — a real balance on mainnet — says
+          nothing, and the chain badge beside it already says which chain. */}
       {money === "simulated" ? (
         <span
           className="badge sim"
@@ -45,8 +44,12 @@ export function TopBar({ height, source, ageSeconds, money, network }: Props) {
           testnet · coins worth nothing
         </span>
       ) : money === "ledger" ? (
-        <span className="badge live" title="Balances here are the ledger's, in ZEC.">
-          real balance
+        /* Nothing. A badge means there is something to watch out for, and
+           the ordinary case is not one — labelling it protests too much. */
+        null
+      ) : money === "stranger" ? (
+        <span className="badge bad" title="The ledger answered; it does not know this browser's token.">
+          token not recognised
         </span>
       ) : (
         <span className="badge bad" title="There is a ledger, and this page cannot reach it. Nothing shown is a balance.">

@@ -1,12 +1,15 @@
 import { useState } from "react";
 
+import type { Money } from "../hooks/useMarket";
 import { signed, zec } from "../lib/market";
 
 interface Props {
-  readonly money: "simulated" | "ledger" | "unreachable";
+  readonly money: Money;
   readonly depositAddress: string | null;
   readonly network: string | null;
   readonly unit: string;
+  readonly cashOut: (zatoshi: number, to: string) => Promise<void>;
+  readonly startOver: () => Promise<void>;
   readonly balance: number;
   readonly session: number;
   readonly hits: number;
@@ -44,7 +47,95 @@ function Deposit({ address }: { address: string }) {
   );
 }
 
-export function Account({ money, depositAddress, network, unit, balance, session, hits, staked }: Props) {
+/** Asking for money back.
+ *
+ * Nothing here takes a deposit without showing the way out on the same
+ * panel. The payment is made by hand from a machine that holds the spending
+ * key, so this says so rather than implying a transfer that is already on
+ * its way.
+ */
+function CashOut({
+  unit,
+  balance,
+  cashOut,
+}: {
+  unit: string;
+  balance: number;
+  cashOut: (zatoshi: number, to: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [state, setState] = useState<"idle" | "sending" | "asked">("idle");
+  const [why, setWhy] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button type="button" className="cash-out" onClick={() => setOpen(true)}>
+        withdraw
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className="cash-out-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const zatoshi = Math.round(Number(amount) * 1e8);
+        if (!Number.isFinite(zatoshi) || zatoshi <= 0) {
+          setWhy("that is not an amount");
+          return;
+        }
+        setState("sending");
+        setWhy(null);
+        void cashOut(zatoshi, to.trim()).then(
+          () => setState("asked"),
+          (error: unknown) => {
+            setState("idle");
+            setWhy(error instanceof Error ? error.message : "the ledger refused it");
+          },
+        );
+      }}
+    >
+      <label htmlFor="cash-to">your shielded address</label>
+      <input
+        id="cash-to"
+        value={to}
+        onChange={(e) => setTo(e.target.value)}
+        placeholder="u1..."
+        autoComplete="off"
+        spellCheck={false}
+      />
+
+      <label htmlFor="cash-amount">amount ({unit})</label>
+      <input
+        id="cash-amount"
+        value={amount}
+        onChange={(e) => setAmount(e.target.value)}
+        placeholder={balance.toFixed(4)}
+        inputMode="decimal"
+        autoComplete="off"
+      />
+
+      {why === null ? null : <p className="note warn">{why}</p>}
+
+      {state === "asked" ? (
+        <p className="note">
+          Asked for. The balance is already down by it. Payments are made by
+          hand, so this is not on its way yet — you will see the transaction
+          when it is.
+        </p>
+      ) : (
+        <button type="submit" disabled={state === "sending" || to.trim() === ""}>
+          {state === "sending" ? "asking…" : "ask for it back"}
+        </button>
+      )}
+    </form>
+  );
+}
+
+export function Account({ money, depositAddress, network, unit, cashOut, startOver, balance, session, hits, staked }: Props) {
   return (
     <section className="panel account">
       <h2>account</h2>
@@ -61,6 +152,10 @@ export function Account({ money, depositAddress, network, unit, balance, session
         </dd>
       </dl>
 
+      {money === "ledger" && balance > 0 ? (
+        <CashOut unit={unit} balance={balance} cashOut={cashOut} />
+      ) : null}
+
       {money === "simulated" ? (
         /* A balance beside live chain data reads as an account somebody is
            holding for you. In this mode nobody is. */
@@ -73,6 +168,20 @@ export function Account({ money, depositAddress, network, unit, balance, session
           The ledger did not answer, so this is not a balance. It says nothing
           about whether your money is there.
         </p>
+      ) : money === "stranger" ? (
+        <>
+          <p className="note warn">
+            The ledger answered and does not know the token this browser is
+            holding. It is not down — this token is not one of its.
+          </p>
+          <p className="note">
+            Starting over takes a new address. Anything the old token held
+            cannot be reached from here.
+          </p>
+          <button type="button" className="cash-out" onClick={() => void startOver()}>
+            start over
+          </button>
+        </>
       ) : (
         <>
           {/* The unit is whatever the ledger says it is. Printing "ZEC"

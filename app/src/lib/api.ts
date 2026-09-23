@@ -48,6 +48,25 @@ export interface Joined extends Standing {
   readonly kept: boolean;
 }
 
+/** The ledger answered, and its answer was that it does not know this token.
+ * Kept apart from a ledger that did not answer at all: one means start again,
+ * the other means wait. Telling a returning player their ledger is down when
+ * it is their token that is gone leaves them with nothing to do. */
+export class TokenNotKnown extends Error {
+  constructor() {
+    super("that token is not one of ours");
+    this.name = "TokenNotKnown";
+  }
+}
+
+export function forget(): void {
+  try {
+    window.localStorage.removeItem(KEY);
+  } catch {
+    // Nothing to forget if it could not be kept.
+  }
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const token = heldToken();
   const response = await fetch(`${BASE}${path}`, {
@@ -60,6 +79,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   const body: unknown = await response.json().catch(() => null);
+  if (response.status === 401) throw new TokenNotKnown();
   if (!response.ok) {
     const said = (body as { error?: string } | null)?.error;
     throw new Error(said ?? `the ledger answered ${response.status}`);
