@@ -1912,6 +1912,7 @@ dependencies = [
  "bip0039",
  "orchard",
  "rand",
+ "rusqlite",
  "rustls 0.23.45",
  "tokio",
  "zcash_client_backend",

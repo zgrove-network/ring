@@ -1,4 +1,5 @@
 mod cache;
+mod ledger;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
@@ -37,6 +38,7 @@ use zcash_keys::address::UnifiedAddress;
 use zcash_keys::keys::UnifiedFullViewingKey;
 
 use crate::cache::MemoryBlockCache;
+use crate::ledger::{Deposit, Ledger};
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_protocol::consensus::Network;
 use zip32::{AccountId, DiversifierIndex};
@@ -189,7 +191,7 @@ async fn scan(
     // enough to read its memo. Scanning queues up which transactions need
     // fetching in full; this answers those requests.
     let mut enhanced = 0usize;
-    let mut received: Vec<(BlockHeight, u64, String, Option<u32>)> = Vec::new();
+    let mut received: Vec<Deposit> = Vec::new();
     for request in db.transaction_data_requests().map_err(|e| anyhow!("{e}"))? {
         let TransactionDataRequest::Enhancement(txid) = request else {
             continue;
@@ -225,14 +227,28 @@ async fn scan(
         // memo is only handed back here, and the memo is the whole point.
         let ufvks = db.get_unified_full_viewing_keys().map_err(|e| anyhow!("{e}"))?;
         let decrypted = decrypt_transaction(network, Some(height), None, &tx, &ufvks);
-        for output in decrypted.sapling_outputs() {
-            received.push((height, u64::from(output.note_value()), describe(output.memo()), None));
+        for (index, output) in decrypted.sapling_outputs().iter().enumerate() {
+            received.push(Deposit {
+                txid: txid.to_string(),
+                output: u32::try_from(index).unwrap_or(0),
+                address_index: u32::MAX,
+                zatoshi: u64::from(output.note_value()),
+                height: u32::from(height),
+                memo: describe(output.memo()),
+            });
         }
-        for output in decrypted.orchard_outputs() {
+        for (index, output) in decrypted.orchard_outputs().iter().enumerate() {
             // An Orchard decrypted note is the note beside the pool it came
             // from, so the value is one step further in than Sapling's.
             let (note, _pool) = output.note();
-            received.push((height, note.value().inner(), describe(output.memo()), None));
+            received.push(Deposit {
+                txid: txid.to_string(),
+                output: u32::try_from(index).unwrap_or(0),
+                address_index: u32::MAX,
+                zatoshi: note.value().inner(),
+                height: u32::from(height),
+                memo: describe(output.memo()),
+            });
         }
 
         // Ironwood is where a wallet puts money now, and this is where the
@@ -247,19 +263,23 @@ async fn scan(
             for ufvk in ufvks.values() {
                 let Some(fvk) = ufvk.orchard() else { continue };
                 let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
-                for action in bundle.actions() {
+                for (index, action) in bundle.actions().iter().enumerate() {
                     let domain = IronwoodDomain::for_action(action);
                     if let Some((note, address, memo)) =
                         try_note_decryption(&domain, &ivk, action)
                     {
                         let raw = address.to_raw_address_bytes();
                         let at = issued.iter().find(|(a, _)| *a == raw).map(|(_, i)| *i);
-                        received.push((
-                            height,
-                            note.value().inner(),
-                            describe(&MemoBytes::from_bytes(&memo).unwrap_or_else(|_| MemoBytes::empty())),
-                            at,
-                        ));
+                        received.push(Deposit {
+                            txid: txid.to_string(),
+                            output: u32::try_from(index).unwrap_or(0),
+                            address_index: at.unwrap_or(u32::MAX),
+                            zatoshi: note.value().inner(),
+                            height: u32::from(height),
+                            memo: describe(
+                                &MemoBytes::from_bytes(&memo).unwrap_or_else(|_| MemoBytes::empty()),
+                            ),
+                        });
                     }
                 }
             }
@@ -277,15 +297,30 @@ async fn scan(
     let summary = db.get_wallet_summary(policy).map_err(|e| anyhow!("{e}"))?;
     // What arrived, and what it said. The memo is the whole reason for the
     // round trip: it is where a position names what it is backing.
-    for (height, value, memo, at) in &received {
-        let who = match at {
-            Some(index) => format!("address {index}"),
-            None => "an address not in the issued range".to_string(),
+    // Writing them down is what makes a rescan safe: the note is the key, so
+    // reading the chain again credits nobody twice.
+    let ledger = Ledger::open(&data.join("ledger.sqlite"))?;
+    let mut fresh = 0usize;
+    for deposit in &received {
+        let who = if deposit.address_index == u32::MAX {
+            "an address not in the issued range".to_string()
+        } else {
+            format!("address {}", deposit.address_index)
         };
+        let new = ledger.record_deposit(deposit)?;
+        if new {
+            fresh += 1;
+        }
         println!(
-            "  received {value} zatoshi in block {}  at {who}  memo {memo}",
-            u32::from(*height)
+            "  {} {} zatoshi in block {}  at {who}  memo {}",
+            if new { "recorded" } else { "already had" },
+            deposit.zatoshi,
+            deposit.height,
+            deposit.memo
         );
+    }
+    if !received.is_empty() {
+        println!("  {fresh} new, {} already known", received.len() - fresh);
     }
 
     match summary {
@@ -324,7 +359,7 @@ async fn main() -> Result<()> {
     // both have to work, and reading argv[0] made the flag shadow it.
     let command = args
         .iter()
-        .find(|a| matches!(a.as_str(), "new" | "scan" | "send" | "address"))
+        .find(|a| matches!(a.as_str(), "new" | "scan" | "send" | "address" | "balances"))
         .map(String::as_str);
 
     match command {
@@ -338,6 +373,19 @@ async fn main() -> Result<()> {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
             let addresses: u32 = flag("--addresses").unwrap_or_else(|| "64".into()).parse()?;
             scan(&network, &ufvk, birthday, addresses, PathBuf::from(data)).await
+        }
+        Some("balances") => {
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            let ledger = Ledger::open(&PathBuf::from(data).join("ledger.sqlite"))?;
+            for (index, label, zatoshi, count) in ledger.balances()? {
+                println!(
+                    "  address {index:<4} {:>14} zatoshi  {count} deposit(s)  {}",
+                    zatoshi,
+                    label.unwrap_or_else(|| "(unassigned)".into())
+                );
+            }
+            println!("  total {} zatoshi", ledger.total()?);
+            Ok(())
         }
         Some("address") => {
             let ufvk_text = flag("--ufvk").ok_or_else(|| anyhow!("--ufvk is required"))?;
