@@ -337,6 +337,19 @@ impl Ledger {
         Ok(deposited - committed + returned - leaving)
     }
 
+    /// Rounds whose block has been mined and which nobody has closed.
+    pub fn awaiting(&self, up_to: u32) -> Result<Vec<(i64, u32)>> {
+        let mut q = self.db.prepare(
+            "SELECT id, settles_on FROM round
+              WHERE outcome IS NULL AND settles_on <= ?1
+              ORDER BY settles_on",
+        )?;
+        let rows = q
+            .query_map(params![up_to], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn open_round(&self, settles_on: u32) -> Result<i64> {
         self.db.execute(
             "INSERT OR IGNORE INTO round (settles_on) VALUES (?1)",

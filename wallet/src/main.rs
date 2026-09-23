@@ -1,3 +1,4 @@
+mod blocks;
 mod cache;
 mod ledger;
 mod serve;
@@ -434,6 +435,7 @@ async fn main() -> Result<()> {
             matches!(
                 a.as_str(),
                 "new" | "scan" | "send" | "address" | "balances" | "withdraw" | "pay" | "serve"
+                    | "close"
             )
         })
         .map(String::as_str);
@@ -449,6 +451,12 @@ async fn main() -> Result<()> {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
             let addresses: u32 = flag("--addresses").unwrap_or_else(|| "64".into()).parse()?;
             scan(&network, &ufvk, birthday, addresses, PathBuf::from(data)).await
+        }
+        Some("close") => {
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            let source = flag("--blocks")
+                .unwrap_or_else(|| "https://api.blockchair.com/zcash/blocks".into());
+            close(PathBuf::from(data), &source).await
         }
         Some("serve") => {
             let ufvk = flag("--ufvk").ok_or_else(|| anyhow!("--ufvk is required"))?;
@@ -550,6 +558,46 @@ async fn pay(network: &Network, seed_file: PathBuf, data: PathBuf) -> Result<()>
         let txid = spend(network, &seed_file, &destination, zatoshi, "", &data).await?;
         ledger.mark_sent(id, &txid, now())?;
         println!("  paid by {txid}");
+    }
+    Ok(())
+}
+
+/// Closes every round whose block has been mined.
+///
+/// The outcome is read here and nowhere else. The market draws the same
+/// reading for the screen, but this is the one that decides who is paid, and
+/// a round is left open rather than closed on a guess.
+async fn close(data: PathBuf, source: &str) -> Result<()> {
+    let mut ledger = Ledger::open(&data.join("ledger.sqlite"))?;
+
+    // Everything ever opened, since a round settles on a block and a block
+    // either exists or does not.
+    let waiting = ledger.awaiting(u32::MAX)?;
+    if waiting.is_empty() {
+        println!("no round is waiting");
+        return Ok(());
+    }
+
+    for (id, height) in waiting {
+        match blocks::at_height(source, height) {
+            Err(why) => {
+                // Not knowing is not an outcome. The round stays open.
+                eprintln!("  round {id} on block {height}: {why}");
+            }
+            Ok(None) => println!("  round {id}: block {height} is not mined yet"),
+            Ok(Some(block)) => {
+                let miner = blocks::miner_of(&block);
+                let settled = ledger.settle(id, &miner, now())?;
+                println!(
+                    "  round {id}: block {height} taken by {miner}; {} staked, {} to {} winner(s), {} kept{}",
+                    settled.staked,
+                    settled.paid,
+                    settled.winners,
+                    settled.rake,
+                    if settled.refunded { " (refunded, nobody called it)" } else { "" }
+                );
+            }
+        }
     }
     Ok(())
 }

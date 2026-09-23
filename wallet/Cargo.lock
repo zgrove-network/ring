@@ -1421,6 +1421,8 @@ checksum = "05015102dad0f7d61691ca347e9d9d9006685a64aefb3d79eecf62665de2153d"
 dependencies = [
  "rustls 0.21.12",
  "rustls-webpki 0.101.7",
+ "serde",
+ "serde_json",
  "webpki-roots 0.25.4",
 ]
 
@@ -1984,6 +1986,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bip0039",
+ "minreq",
  "orchard",
  "rand",
  "rusqlite",
