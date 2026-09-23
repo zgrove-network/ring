@@ -89,6 +89,22 @@ impl Ledger {
                PRIMARY KEY (round_id, address_index)
              );
 
+             CREATE TABLE IF NOT EXISTS withdrawal (
+               id            INTEGER PRIMARY KEY,
+               address_index INTEGER NOT NULL,
+               zatoshi       INTEGER NOT NULL CHECK (zatoshi > 0),
+               destination   TEXT    NOT NULL,
+               requested_at  INTEGER NOT NULL,
+               -- Filled in when the transaction is built, before it is
+               -- broadcast, so a crash in between leaves something to check
+               -- the chain for rather than a reason to pay twice.
+               txid          TEXT,
+               sent_at       INTEGER
+             );
+
+             CREATE INDEX IF NOT EXISTS withdrawal_unsent
+               ON withdrawal (address_index) WHERE txid IS NULL;
+
              CREATE TABLE IF NOT EXISTS rake (
                round_id INTEGER PRIMARY KEY REFERENCES round(id),
                zatoshi  INTEGER NOT NULL
@@ -170,7 +186,14 @@ impl Ledger {
             params![address_index],
             |r| r.get(0),
         )?;
-        Ok(deposited - committed + returned)
+        // Counted from the moment it is asked for, sent or not. Waiting for
+        // the transaction would let the same balance be withdrawn twice.
+        let leaving: i64 = self.db.query_row(
+            "SELECT COALESCE(SUM(zatoshi), 0) FROM withdrawal WHERE address_index = ?1",
+            params![address_index],
+            |r| r.get(0),
+        )?;
+        Ok(deposited - committed + returned - leaving)
     }
 
     pub fn open_round(&self, settles_on: u32) -> Result<i64> {
@@ -219,8 +242,11 @@ impl Ledger {
         let returned: i64 = tx.query_row(
             "SELECT COALESCE(SUM(zatoshi), 0) FROM payout WHERE address_index = ?1",
             params![address_index], |r| r.get(0))?;
+        let leaving: i64 = tx.query_row(
+            "SELECT COALESCE(SUM(zatoshi), 0) FROM withdrawal WHERE address_index = ?1",
+            params![address_index], |r| r.get(0))?;
 
-        let available = deposited - committed + returned;
+        let available = deposited - committed + returned - leaving;
         let wanted = i64::try_from(zatoshi).context("that stake is not a value")?;
         if wanted > available {
             anyhow::bail!("address {address_index} has {available} zatoshi, not {wanted}");
@@ -236,6 +262,84 @@ impl Ledger {
         Ok(())
     }
 
+    /// Commits a balance to leaving, before anything is sent.
+    ///
+    /// The debit happens here, not when the transaction goes out. If it
+    /// waited, the same balance could be asked for twice and both requests
+    /// would look fundable.
+    pub fn request_withdrawal(
+        &mut self,
+        address_index: u32,
+        zatoshi: u64,
+        destination: &str,
+        at: i64,
+    ) -> Result<i64> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+        let sums: [i64; 4] = [
+            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM deposit WHERE address_index=?1",
+                params![address_index], |r| r.get(0))?,
+            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM bet WHERE address_index=?1",
+                params![address_index], |r| r.get(0))?,
+            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM payout WHERE address_index=?1",
+                params![address_index], |r| r.get(0))?,
+            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM withdrawal WHERE address_index=?1",
+                params![address_index], |r| r.get(0))?,
+        ];
+        let available = sums[0] - sums[1] + sums[2] - sums[3];
+        let wanted = i64::try_from(zatoshi).context("that amount is not a value")?;
+        if wanted > available {
+            anyhow::bail!("address {address_index} has {available} zatoshi, not {wanted}");
+        }
+
+        tx.execute(
+            "INSERT INTO withdrawal (address_index, zatoshi, destination, requested_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![address_index, wanted, destination, at],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// What has been committed to leaving but has no transaction yet.
+    pub fn unsent_withdrawals(&self) -> Result<Vec<(i64, u32, u64, String)>> {
+        let mut q = self.db.prepare(
+            "SELECT id, address_index, zatoshi, destination
+               FROM withdrawal WHERE txid IS NULL ORDER BY id",
+        )?;
+        let rows = q
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Writes down which transaction is paying a withdrawal.
+    ///
+    /// Refused if one is already recorded: a second transaction for the same
+    /// debit is money leaving twice, and nothing on a shielded chain brings
+    /// it back.
+    pub fn mark_sent(&self, id: i64, txid: &str, at: i64) -> Result<()> {
+        let changed = self.db.execute(
+            "UPDATE withdrawal SET txid = ?1, sent_at = ?2 WHERE id = ?3 AND txid IS NULL",
+            params![txid, at, id],
+        )?;
+        if changed != 1 {
+            let existing: Option<String> = self
+                .db
+                .query_row("SELECT txid FROM withdrawal WHERE id = ?1", params![id], |r| r.get(0))
+                .unwrap_or(None);
+            match existing {
+                Some(previous) => anyhow::bail!("withdrawal {id} is already paid by {previous}"),
+                None => anyhow::bail!("there is no withdrawal {id}"),
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The house's cut of what the losing side staked, in hundredths.
@@ -358,6 +462,21 @@ impl Ledger {
 }
 
 impl Ledger {
+    /// The highest block this book has recorded a deposit from.
+    ///
+    /// Compared against how far the wallet has scanned, this is what says
+    /// whether the book is complete or merely not empty.
+    pub fn recorded_to(&self) -> Result<Option<u32>> {
+        let height: Option<i64> =
+            self.db.query_row("SELECT MAX(height) FROM deposit", [], |r| r.get(0))?;
+        Ok(height.map(|h| h as u32))
+    }
+
+    pub fn is_empty(&self) -> Result<bool> {
+        let count: i64 = self.db.query_row("SELECT COUNT(*) FROM deposit", [], |r| r.get(0))?;
+        Ok(count == 0)
+    }
+
     pub fn total(&self) -> Result<u64> {
         let total: i64 = self
             .db
@@ -619,6 +738,53 @@ mod tests {
         assert_eq!(settled.rake, 0, "the house takes nothing");
         assert_eq!(ledger.available(0).unwrap(), 1000);
         assert_eq!(ledger.available(1).unwrap(), 1000);
+    }
+
+    #[test]
+    fn a_withdrawal_is_debited_when_it_is_asked_for() {
+        // Not when it is sent. Waiting would let the same balance be asked
+        // for twice, and both requests would look fundable.
+        let mut ledger = book();
+        fund(&ledger, 0, 1000);
+
+        ledger.request_withdrawal(0, 600, "utest1somewhere", 0).unwrap();
+        assert_eq!(ledger.available(0).unwrap(), 400, "debited before sending");
+        assert!(
+            ledger.request_withdrawal(0, 500, "utest1somewhere", 0).is_err(),
+            "only 400 is left"
+        );
+        ledger.request_withdrawal(0, 400, "utest1somewhere", 0).unwrap();
+        assert_eq!(ledger.available(0).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_withdrawal_is_not_paid_by_two_transactions() {
+        // Nothing on a shielded chain brings the second one back.
+        let mut ledger = book();
+        fund(&ledger, 0, 1000);
+        let id = ledger.request_withdrawal(0, 500, "utest1somewhere", 0).unwrap();
+
+        ledger.mark_sent(id, "aa".repeat(32).as_str(), 0).unwrap();
+        let second = ledger.mark_sent(id, "bb".repeat(32).as_str(), 0);
+        assert!(second.is_err(), "paid twice");
+        assert!(format!("{}", second.unwrap_err()).contains("already paid"));
+
+        assert!(ledger.unsent_withdrawals().unwrap().is_empty());
+    }
+
+    #[test]
+    fn money_committed_to_a_round_cannot_also_be_withdrawn() {
+        let mut ledger = book();
+        fund(&ledger, 0, 1000);
+        let round = ledger.open_round(10).unwrap();
+        ledger.place(round, 0, "Foundry", 800, 0).unwrap();
+
+        assert!(ledger.request_withdrawal(0, 300, "utest1somewhere", 0).is_err());
+        ledger.request_withdrawal(0, 200, "utest1somewhere", 0).unwrap();
+
+        // And what the round returns is withdrawable afterwards.
+        ledger.settle(round, "Foundry", 0).unwrap();
+        assert_eq!(ledger.available(0).unwrap(), 800, "the stake came back");
     }
 
     #[test]

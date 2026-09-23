@@ -130,6 +130,27 @@ async fn scan(
 ) -> Result<()> {
     std::fs::create_dir_all(&data).context("making the data directory")?;
 
+    // The wallet database is a cache of the chain; the ledger is the record.
+    // Deposits are written from the queue of transactions the wallet asks to
+    // have fetched in full, and that queue empties once they are fetched — so
+    // a ledger that is behind its wallet can never catch up on its own, and
+    // would sit there looking merely quiet. Rebuilding the cache is cheap;
+    // a book that silently owes people less than it should is not.
+    let ledger_path = data.join("ledger.sqlite");
+    let wallet_path = data.join("wallet.sqlite");
+    if wallet_path.exists() {
+        let behind = {
+            let ledger = Ledger::open(&ledger_path)?;
+            ledger.is_empty()?
+        };
+        if behind {
+            println!("the ledger is empty and the wallet is not; rebuilding from the birthday");
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", wallet_path.display()));
+            }
+        }
+    }
+
     let ufvk = UnifiedFullViewingKey::decode(network, ufvk_text)
         .map_err(|e| anyhow!("that is not a viewing key for this network: {e}"))?;
 
@@ -359,7 +380,12 @@ async fn main() -> Result<()> {
     // both have to work, and reading argv[0] made the flag shadow it.
     let command = args
         .iter()
-        .find(|a| matches!(a.as_str(), "new" | "scan" | "send" | "address" | "balances"))
+        .find(|a| {
+            matches!(
+                a.as_str(),
+                "new" | "scan" | "send" | "address" | "balances" | "withdraw" | "pay"
+            )
+        })
         .map(String::as_str);
 
     match command {
@@ -373,6 +399,22 @@ async fn main() -> Result<()> {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
             let addresses: u32 = flag("--addresses").unwrap_or_else(|| "64".into()).parse()?;
             scan(&network, &ufvk, birthday, addresses, PathBuf::from(data)).await
+        }
+        Some("withdraw") => {
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            let mut ledger = Ledger::open(&PathBuf::from(&data).join("ledger.sqlite"))?;
+            let index: u32 = flag("--index").ok_or_else(|| anyhow!("--index is required"))?.parse()?;
+            let zatoshi: u64 = flag("--zatoshi").ok_or_else(|| anyhow!("--zatoshi is required"))?.parse()?;
+            let to = flag("--to").ok_or_else(|| anyhow!("--to is required"))?;
+            let id = ledger.request_withdrawal(index, zatoshi, &to, now())?;
+            println!("withdrawal {id} committed: {zatoshi} zatoshi from address {index}");
+            println!("  balance now {} zatoshi", ledger.available(index)?);
+            Ok(())
+        }
+        Some("pay") => {
+            let seed = flag("--seed-file").ok_or_else(|| anyhow!("--seed-file is required"))?;
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            pay(&network, PathBuf::from(seed), PathBuf::from(data)).await
         }
         Some("balances") => {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
@@ -429,7 +471,49 @@ async fn send(
     memo_text: &str,
     data: PathBuf,
 ) -> Result<()> {
-    let phrase = std::fs::read_to_string(&seed_file)
+    let txid = spend(network, &seed_file, to_text, zatoshi, memo_text, &data).await?;
+    println!("sent {txid}");
+    Ok(())
+}
+
+/// Pays every withdrawal that has been committed but not yet sent.
+///
+/// The transaction id is written down before it is broadcast, so a crash in
+/// between leaves something to check the chain for rather than a reason to
+/// pay somebody twice.
+async fn pay(network: &Network, seed_file: PathBuf, data: PathBuf) -> Result<()> {
+    let ledger = Ledger::open(&data.join("ledger.sqlite"))?;
+    let owed = ledger.unsent_withdrawals()?;
+    if owed.is_empty() {
+        println!("nothing owed");
+        return Ok(());
+    }
+
+    for (id, index, zatoshi, destination) in owed {
+        println!("withdrawal {id}: {zatoshi} zatoshi for address {index}");
+        let txid = spend(network, &seed_file, &destination, zatoshi, "", &data).await?;
+        ledger.mark_sent(id, &txid, now())?;
+        println!("  paid by {txid}");
+    }
+    Ok(())
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+async fn spend(
+    network: &Network,
+    seed_file: &PathBuf,
+    to_text: &str,
+    zatoshi: u64,
+    memo_text: &str,
+    data: &PathBuf,
+) -> Result<String> {
+    let phrase = std::fs::read_to_string(seed_file)
         .with_context(|| format!("reading {}", seed_file.display()))?;
     let mnemonic = <Mnemonic<English>>::from_phrase(phrase.trim())
         .map_err(|e| anyhow!("that file does not hold a seed phrase: {e}"))?;
@@ -509,6 +593,7 @@ async fn send(
             .ok_or_else(|| anyhow!("the wallet built {txid} and then lost it"))?;
         let mut raw = Vec::new();
         tx.write(&mut raw).context("serialising the transaction")?;
+        let _ = &raw;
 
         let response = client
             .send_transaction(RawTransaction { data: raw, height: 0 })
@@ -525,8 +610,8 @@ async fn send(
                 response.error_message
             );
         }
-        println!("sent {txid}");
+        return Ok(txid.to_string());
     }
 
-    Ok(())
+    anyhow::bail!("nothing was built")
 }
