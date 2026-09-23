@@ -42,7 +42,14 @@ jobs:
         working-directory: app
     steps:
       - uses: actions/checkout@v4
+
+      # The action reads package.json from the repository root, and this
+      # project keeps its in app/. `defaults.run.working-directory` does not
+      # reach a `uses:` step, which is why the first run failed here.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
