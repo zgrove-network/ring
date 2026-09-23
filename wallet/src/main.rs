@@ -33,12 +33,13 @@ use zcash_client_backend::sync;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::WalletDb;
+use zcash_keys::address::UnifiedAddress;
 use zcash_keys::keys::UnifiedFullViewingKey;
 
 use crate::cache::MemoryBlockCache;
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_protocol::consensus::Network;
-use zip32::AccountId;
+use zip32::{AccountId, DiversifierIndex};
 
 /// Generates the wallet the market receives positions at.
 ///
@@ -84,6 +85,25 @@ fn endpoint(network: &Network) -> &'static str {
     }
 }
 
+/// One address per depositor, derived from the same viewing key.
+///
+/// Unified addresses carry a diversifier: one key produces a practically
+/// unlimited supply of addresses, all spendable by the same wallet, and
+/// nobody outside can tell that two of them belong together. So the address
+/// itself can say who paid, without the payer having to write anything.
+fn derive(ufvk: &UnifiedFullViewingKey, index: u32) -> Result<(UnifiedAddress, u32)> {
+    let j = DiversifierIndex::from(index);
+    let (address, found) = ufvk
+        .find_address(j, UnifiedAddressRequest::AllAvailableKeys)
+        .map_err(|e| anyhow!("deriving address {index}: {e}"))?;
+    let bytes = *found.as_bytes();
+    let mut at = 0u64;
+    for (i, b) in bytes.iter().take(8).enumerate() {
+        at |= u64::from(*b) << (8 * i);
+    }
+    Ok((address, u32::try_from(at).unwrap_or(u32::MAX)))
+}
+
 /// What a memo says, or why it says nothing.
 fn describe(bytes: &MemoBytes) -> String {
     match Memo::try_from(bytes) {
@@ -99,11 +119,27 @@ fn describe(bytes: &MemoBytes) -> String {
 ///
 /// The viewing key reads every payment and can spend none of them, which is
 /// the most a process reachable from the internet should be trusted with.
-async fn scan(network: &Network, ufvk_text: &str, birthday: u32, data: PathBuf) -> Result<()> {
+async fn scan(
+    network: &Network,
+    ufvk_text: &str,
+    birthday: u32,
+    addresses: u32,
+    data: PathBuf,
+) -> Result<()> {
     std::fs::create_dir_all(&data).context("making the data directory")?;
 
     let ufvk = UnifiedFullViewingKey::decode(network, ufvk_text)
         .map_err(|e| anyhow!("that is not a viewing key for this network: {e}"))?;
+
+    // Every address this key can hand out, so a note can be traced back to
+    // the depositor it was meant for without the payer writing anything.
+    let mut issued: Vec<([u8; 43], u32)> = Vec::new();
+    for index in 0..addresses {
+        let (address, _) = derive(&ufvk, index)?;
+        if let Some(orchard) = address.orchard() {
+            issued.push((orchard.to_raw_address_bytes(), index));
+        }
+    }
 
     let mut client = CompactTxStreamerClient::connect(endpoint(network))
         .await
@@ -153,7 +189,7 @@ async fn scan(network: &Network, ufvk_text: &str, birthday: u32, data: PathBuf) 
     // enough to read its memo. Scanning queues up which transactions need
     // fetching in full; this answers those requests.
     let mut enhanced = 0usize;
-    let mut received: Vec<(BlockHeight, u64, String)> = Vec::new();
+    let mut received: Vec<(BlockHeight, u64, String, Option<u32>)> = Vec::new();
     for request in db.transaction_data_requests().map_err(|e| anyhow!("{e}"))? {
         let TransactionDataRequest::Enhancement(txid) = request else {
             continue;
@@ -190,13 +226,13 @@ async fn scan(network: &Network, ufvk_text: &str, birthday: u32, data: PathBuf) 
         let ufvks = db.get_unified_full_viewing_keys().map_err(|e| anyhow!("{e}"))?;
         let decrypted = decrypt_transaction(network, Some(height), None, &tx, &ufvks);
         for output in decrypted.sapling_outputs() {
-            received.push((height, u64::from(output.note_value()), describe(output.memo())));
+            received.push((height, u64::from(output.note_value()), describe(output.memo()), None));
         }
         for output in decrypted.orchard_outputs() {
             // An Orchard decrypted note is the note beside the pool it came
             // from, so the value is one step further in than Sapling's.
             let (note, _pool) = output.note();
-            received.push((height, note.value().inner(), describe(output.memo())));
+            received.push((height, note.value().inner(), describe(output.memo()), None));
         }
 
         // Ironwood is where a wallet puts money now, and this is where the
@@ -213,13 +249,16 @@ async fn scan(network: &Network, ufvk_text: &str, birthday: u32, data: PathBuf) 
                 let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
                 for action in bundle.actions() {
                     let domain = IronwoodDomain::for_action(action);
-                    if let Some((note, _address, memo)) =
+                    if let Some((note, address, memo)) =
                         try_note_decryption(&domain, &ivk, action)
                     {
+                        let raw = address.to_raw_address_bytes();
+                        let at = issued.iter().find(|(a, _)| *a == raw).map(|(_, i)| *i);
                         received.push((
                             height,
                             note.value().inner(),
                             describe(&MemoBytes::from_bytes(&memo).unwrap_or_else(|_| MemoBytes::empty())),
+                            at,
                         ));
                     }
                 }
@@ -238,8 +277,15 @@ async fn scan(network: &Network, ufvk_text: &str, birthday: u32, data: PathBuf) 
     let summary = db.get_wallet_summary(policy).map_err(|e| anyhow!("{e}"))?;
     // What arrived, and what it said. The memo is the whole reason for the
     // round trip: it is where a position names what it is backing.
-    for (height, value, memo) in &received {
-        println!("  received {value} zatoshi in block {}  memo {memo}", u32::from(*height));
+    for (height, value, memo, at) in &received {
+        let who = match at {
+            Some(index) => format!("address {index}"),
+            None => "an address not in the issued range".to_string(),
+        };
+        println!(
+            "  received {value} zatoshi in block {}  at {who}  memo {memo}",
+            u32::from(*height)
+        );
     }
 
     match summary {
@@ -278,7 +324,7 @@ async fn main() -> Result<()> {
     // both have to work, and reading argv[0] made the flag shadow it.
     let command = args
         .iter()
-        .find(|a| matches!(a.as_str(), "new" | "scan" | "send"))
+        .find(|a| matches!(a.as_str(), "new" | "scan" | "send" | "address"))
         .map(String::as_str);
 
     match command {
@@ -290,7 +336,20 @@ async fn main() -> Result<()> {
                 .parse()
                 .context("--birthday must be a block height")?;
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
-            scan(&network, &ufvk, birthday, PathBuf::from(data)).await
+            let addresses: u32 = flag("--addresses").unwrap_or_else(|| "64".into()).parse()?;
+            scan(&network, &ufvk, birthday, addresses, PathBuf::from(data)).await
+        }
+        Some("address") => {
+            let ufvk_text = flag("--ufvk").ok_or_else(|| anyhow!("--ufvk is required"))?;
+            let ufvk = UnifiedFullViewingKey::decode(&network, &ufvk_text)
+                .map_err(|e| anyhow!("that is not a viewing key for this network: {e}"))?;
+            let index: u32 = flag("--index").unwrap_or_else(|| "0".into()).parse()?;
+            let (address, at) = derive(&ufvk, index)?;
+            println!("{}", address.encode(&network));
+            if at != index {
+                println!("(asked for {index}, the first valid diversifier was {at})");
+            }
+            Ok(())
         }
         Some("send") => {
             let seed = flag("--seed-file").ok_or_else(|| anyhow!("--seed-file is required"))?;
