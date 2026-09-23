@@ -6,14 +6,14 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    entrypoint: ["/bin/sh", "-c"]
     command:
-      - serve
-      - --ufvk
-      - ${RING_UFVK:?set RING_UFVK in .env}
-      - --data
-      - /data
-      - --bind
-      - 0.0.0.0:5321
+      - exec ring-wallet $$RING_NETWORK serve --ufvk "$$RING_UFVK" --data /data --bind 0.0.0.0:5321
+    environment:
+      RING_UFVK: ${RING_UFVK:?set RING_UFVK in .env}
+      # Empty for mainnet. Set to --testnet to run against coins worth
+      # nothing, which is how this is proved before it is trusted.
+      RING_NETWORK: ${RING_NETWORK-}
     volumes:
       - ring-data:/data
     expose:
@@ -31,13 +31,14 @@ services:
     command:
       - |
         while true; do
-          ring-wallet scan --ufvk "$$RING_UFVK" --birthday "$$RING_BIRTHDAY" --data /data || true
+          ring-wallet $$RING_NETWORK scan --ufvk "$$RING_UFVK" --birthday "$$RING_BIRTHDAY" --data /data || true
           ring-wallet close --data /data || true
           sleep 60
         done
     environment:
       RING_UFVK: ${RING_UFVK:?set RING_UFVK in .env}
       RING_BIRTHDAY: ${RING_BIRTHDAY:?set RING_BIRTHDAY in .env}
+      RING_NETWORK: ${RING_NETWORK-}
     volumes:
       - ring-data:/data
     restart: unless-stopped
