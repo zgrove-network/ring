@@ -23,6 +23,7 @@ export default function App() {
         source={state.source}
         ageSeconds={state.ageSeconds}
         money={state.money}
+        network={state.network}
       />
 
       <main className="body">
@@ -53,6 +54,8 @@ export default function App() {
           <Account
             money={state.money}
             depositAddress={state.depositAddress}
+            network={state.network}
+            unit={state.unit}
             balance={state.balance}
             session={state.session}
             hits={state.hits}

@@ -36,6 +36,10 @@ export interface Standing {
   readonly index: number;
   readonly address: string;
   readonly available: number;
+  /** "mainnet" or "testnet". Never assumed from the address. */
+  readonly network: string;
+  /** ZEC on mainnet, TAZ on testnet. Never hard-coded on this side. */
+  readonly unit: string;
 }
 
 export interface Joined extends Standing {

@@ -1,15 +1,50 @@
+import { useState } from "react";
+
 import { signed, zec } from "../lib/market";
 
 interface Props {
   readonly money: "simulated" | "ledger" | "unreachable";
   readonly depositAddress: string | null;
+  readonly network: string | null;
+  readonly unit: string;
   readonly balance: number;
   readonly session: number;
   readonly hits: number;
   readonly staked: number;
 }
 
-export function Account({ money, depositAddress, balance, session, hits, staked }: Props) {
+/** The address, and a way to take it.
+ *
+ * It is a couple of hundred characters of base32 and nobody is going to
+ * retype it. Showing it without a way to copy it is showing it for decoration.
+ */
+function Deposit({ address }: { address: string }) {
+  const [took, setTook] = useState(false);
+  return (
+    <div className="deposit">
+      <p className="note addr-line" title={address}>
+        {address.slice(0, 22)}…{address.slice(-8)}
+      </p>
+      <button
+        type="button"
+        className="copy"
+        onClick={() => {
+          void navigator.clipboard?.writeText(address).then(
+            () => {
+              setTook(true);
+              setTimeout(() => setTook(false), 1500);
+            },
+            () => undefined,
+          );
+        }}
+      >
+        {took ? "copied" : "copy address"}
+      </button>
+    </div>
+  );
+}
+
+export function Account({ money, depositAddress, network, unit, balance, session, hits, staked }: Props) {
   return (
     <section className="panel account">
       <h2>account</h2>
@@ -40,12 +75,18 @@ export function Account({ money, depositAddress, balance, session, hits, staked 
         </p>
       ) : (
         <>
-          <p className="note">Send ZEC here to play. Shielded, memo not needed.</p>
-          {depositAddress === null ? null : (
-            <p className="note addr-line" title={depositAddress}>
-              {depositAddress.slice(0, 22)}…{depositAddress.slice(-8)}
+          {/* The unit is whatever the ledger says it is. Printing "ZEC"
+              beside a testnet address would be an instruction to destroy
+              money, and the address alone does not say it loudly enough. */}
+          {network === "testnet" ? (
+            <p className="note warn">
+              Testnet. This address takes <b>TAZ</b>, which is worth nothing.
+              Real ZEC sent here is gone.
             </p>
+          ) : (
+            <p className="note">Send {unit} here to play. Shielded, memo not needed.</p>
           )}
+          {depositAddress === null ? null : <Deposit address={depositAddress} />}
         </>
       )}
     </section>

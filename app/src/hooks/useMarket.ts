@@ -28,6 +28,10 @@ export interface MarketState {
   readonly money: Money;
   /** Where to send a deposit, once there is a ledger to send it to. */
   readonly depositAddress: string | null;
+  /** What the ledger says it is running on, never guessed from the address. */
+  readonly network: string | null;
+  /** ZEC or TAZ, as the ledger names it. */
+  readonly unit: string;
   readonly blocks: readonly Block[];
   readonly rounds: readonly Round[];
   readonly position: Position | null;
@@ -65,6 +69,8 @@ export function useMarket() {
   const [ageSeconds, setAgeSeconds] = useState(0);
   const [money, setMoney] = useState<Money>(api.connected ? "unreachable" : "simulated");
   const [depositAddress, setDepositAddress] = useState<string | null>(null);
+  const [network, setNetwork] = useState<string | null>(null);
+  const [unit, setUnit] = useState("ZEC");
 
   const positionRef = useRef<Position | null>(null);
   positionRef.current = position;
@@ -187,6 +193,8 @@ export function useMarket() {
         if (!alive) return;
         setBalance(standing.available / 1e8);
         setDepositAddress(standing.address);
+        setNetwork(standing.network);
+        setUnit(standing.unit);
         setMoney("ledger");
       } catch {
         if (alive) setMoney("unreachable");
@@ -223,6 +231,8 @@ export function useMarket() {
     ageSeconds,
     money,
     depositAddress,
+    network,
+    unit,
     blocks,
     rounds,
     position,

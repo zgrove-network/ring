@@ -484,3 +484,25 @@ button.ghost:hover { color: var(--bright); border-color: var(--line); }
   word-break: break-all;
   margin-top: 4px;
 }
+
+/* A testnet address beside the word ZEC is how somebody loses money. */
+.account .note.warn { color: #c8a765; }
+.account .note.warn b { color: var(--bright); font-weight: 400; }
+
+/* Two hundred characters of base32 that nobody will retype. */
+/* On its own line rather than beside the address: every button here is 44px
+   tall because that is what a finger needs, and one that size wedged into a
+   line of 11px text looks like a mistake. */
+.account .deposit { margin-top: 6px; }
+.account .deposit .copy {
+  font: inherit;
+  font-size: 11px;
+  color: var(--dim);
+  background: transparent;
+  border: 1px dashed var(--line);
+  padding: 0 12px;
+  margin-top: 4px;
+  width: 100%;
+}
+.account .deposit .copy:hover { color: var(--bright); border-color: var(--dim); }
+.account .copy:hover { color: var(--bright); border-color: var(--dim); }

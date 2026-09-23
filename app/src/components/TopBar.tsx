@@ -6,9 +6,10 @@ interface Props {
   readonly source: Source;
   readonly ageSeconds: number;
   readonly money: Money;
+  readonly network: string | null;
 }
 
-export function TopBar({ height, source, ageSeconds, money }: Props) {
+export function TopBar({ height, source, ageSeconds, money, network }: Props) {
   return (
     <header className="topbar">
       <Mark />
@@ -38,6 +39,10 @@ export function TopBar({ height, source, ageSeconds, money }: Props) {
           title="No wallet is connected and no payment is made. The blocks are real; the stakes are not."
         >
           simulation · no real money
+        </span>
+      ) : money === "ledger" && network === "testnet" ? (
+        <span className="badge sim" title="Testnet coins. They are worth nothing and cannot be exchanged.">
+          testnet · coins worth nothing
         </span>
       ) : money === "ledger" ? (
         <span className="badge live" title="Balances here are the ledger's, in ZEC.">

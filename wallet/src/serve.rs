@@ -69,6 +69,8 @@ struct Joined {
     index: u32,
     address: String,
     token: String,
+    network: &'static str,
+    unit: &'static str,
     note: &'static str,
 }
 
@@ -110,6 +112,8 @@ async fn join(State(server): State<Shared>) -> Result<Json<Joined>, Refusal> {
         index,
         address: address.encode(&server.network),
         token,
+        network: name_of(&server.network),
+        unit: unit_of(&server.network),
         note: "keep this token; it is the only way back to this balance",
     }))
 }
@@ -119,6 +123,12 @@ struct Standing {
     index: u32,
     address: String,
     available: i64,
+    /// Said on every answer, because an address alone does not say it loudly
+    /// enough. A page that reads "send ZEC here" beside a testnet address is
+    /// an instruction to destroy money.
+    network: &'static str,
+    /// What the figures on this page are denominated in.
+    unit: &'static str,
 }
 
 async fn me(State(server): State<Shared>, headers: HeaderMap) -> Result<Json<Standing>, Refusal> {
@@ -132,6 +142,8 @@ async fn me(State(server): State<Shared>, headers: HeaderMap) -> Result<Json<Sta
         index,
         address: address.encode(&server.network),
         available,
+        network: name_of(&server.network),
+        unit: unit_of(&server.network),
     }))
 }
 
@@ -177,6 +189,23 @@ async fn withdraw(
             .map_err(bad)?;
     }
     me(State(server), headers).await
+}
+
+fn name_of(network: &Network) -> &'static str {
+    match network {
+        Network::MainNetwork => "mainnet",
+        Network::TestNetwork => "testnet",
+    }
+}
+
+/// Testnet coins are called TAZ and are worth nothing. Calling them ZEC on a
+/// page that also prints an address is how somebody sends real money to a
+/// testnet address and never sees it again.
+fn unit_of(network: &Network) -> &'static str {
+    match network {
+        Network::MainNetwork => "ZEC",
+        Network::TestNetwork => "TAZ",
+    }
 }
 
 fn now() -> i64 {
