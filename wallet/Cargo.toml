@@ -24,3 +24,6 @@ bip0039 = { version = "0.12", features = ["all-languages"] }
 rand = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 anyhow = "1"
+async-trait = "0.1"
+# tonic pulls rustls but picks no provider, so one is chosen here.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
