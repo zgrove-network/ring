@@ -194,6 +194,51 @@ impl Ledger {
     /// The token is the only handle they have: there are no accounts here and
     /// nothing is asked of them, which is the point. It is stored hashed, so
     /// this file records who is owed what without being a way to collect it.
+    /// The lowest index no depositor and no deposit has used.
+    ///
+    /// The caller resolves it to a real address before claiming, because a
+    /// requested index and the diversifier that actually works are not the
+    /// same number.
+    pub fn next_index(&self) -> Result<u32> {
+        let next: u32 = self
+            .db
+            .query_row(
+                "SELECT MAX(n) FROM (
+                   SELECT COALESCE(MAX(address_index) + 1, 0) AS n FROM depositor
+                   UNION ALL
+                   SELECT COALESCE(MAX(address_index) + 1, 0) AS n FROM deposit
+                                    WHERE address_index < 4294967295
+                 )",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        Ok(next)
+    }
+
+    /// Takes one specific index, or fails because somebody already has it.
+    ///
+    /// The index is the one the address actually came out at, never the one
+    /// that was asked for. Several requested indices can resolve to the same
+    /// address — a diversifier is only usable if it works for every receiver
+    /// in the address, and Sapling rejects about half of them — so storing
+    /// the request would hand three depositors one address and make their
+    /// money inseparable.
+    pub fn claim_at(&mut self, index: u32, label: &str, token: &str, at: i64) -> Result<()> {
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "INSERT INTO depositor (address_index, label, created_at, token_hash)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![index, label, at, digest(token)],
+        )
+        .with_context(|| format!("claiming address {index}"))?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn claim(&mut self, label: &str, token: &str, at: i64) -> Result<u32> {
         let tx = self
             .db

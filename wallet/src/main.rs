@@ -159,9 +159,14 @@ async fn scan(
     // the depositor it was meant for without the payer writing anything.
     let mut issued: Vec<([u8; 43], u32)> = Vec::new();
     for index in 0..addresses {
-        let (address, _) = derive(&ufvk, index)?;
+        // Keyed on the index the address actually came out at, which is what
+        // a depositor was given. Keying on the requested one would file three
+        // different depositors' money under three names for one address.
+        let (address, actual) = derive(&ufvk, index)?;
         if let Some(orchard) = address.orchard() {
-            issued.push((orchard.to_raw_address_bytes(), index));
+            if !issued.iter().any(|(_, i)| *i == actual) {
+                issued.push((orchard.to_raw_address_bytes(), actual));
+            }
         }
     }
 
@@ -358,6 +363,50 @@ async fn scan(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bip0039::{Count, English, Mnemonic};
+
+    /// Two depositors must never be handed one address.
+    ///
+    /// A diversifier is only usable when it works for every receiver in the
+    /// address, and Sapling rejects about half of them, so `find_address`
+    /// walks forward — and consecutive requests collapse onto the same
+    /// answer. Asked for 5, 6 and 7 on a real key, all three came back with
+    /// one address. Filed under three names, three people's deposits would
+    /// have been inseparable.
+    #[test]
+    fn distinct_indices_never_share_an_address() {
+        let network = Network::TestNetwork;
+        let mnemonic = <Mnemonic<English>>::generate(Count::Words24);
+        let usk =
+            UnifiedSpendingKey::from_seed(&network, &mnemonic.to_seed(""), AccountId::ZERO).unwrap();
+        let ufvk = usk.to_unified_full_viewing_key();
+
+        let mut seen = std::collections::HashMap::new();
+        let mut collapsed = 0;
+        for wanted in 0..80u32 {
+            let (address, actual) = derive(&ufvk, wanted).unwrap();
+            let encoded = address.encode(&network);
+            if actual != wanted {
+                collapsed += 1;
+            }
+            if let Some(previous) = seen.insert(encoded.clone(), actual) {
+                assert_eq!(
+                    previous, actual,
+                    "one address came back under two indices, {previous} and {actual}"
+                );
+            }
+        }
+
+        assert!(
+            collapsed > 0,
+            "no request resolved to a different index; this key would not have caught the bug"
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // rustls refuses to guess when more than one provider could be linked.
@@ -541,6 +590,35 @@ async fn spend(
         .map_err(|e| anyhow!("{e}"))?
         .first()
         .ok_or_else(|| anyhow!("this wallet has no account; run scan first"))?;
+
+    // A transaction carries an expiry height chosen from what the wallet
+    // believes the tip is. A wallet that has not been scanned lately builds
+    // one that is already expired, and the network refuses it after the
+    // proving is done — minutes of work for a transaction born dead.
+    {
+        let mut client = CompactTxStreamerClient::connect(endpoint(network))
+            .await
+            .context("reaching lightwalletd")?;
+        let tip: u32 = client
+            .get_latest_block(ChainSpec {})
+            .await
+            .context("asking for the chain tip")?
+            .into_inner()
+            .height
+            .try_into()
+            .unwrap_or(0);
+        let known = db
+            .chain_height()
+            .map_err(|e| anyhow!("{e}"))?
+            .map(u32::from)
+            .unwrap_or(0);
+        if tip.saturating_sub(known) > 10 {
+            bail!(
+                "this wallet last saw block {known} and the chain is at {tip}; \
+                 run scan first, or the transaction expires before it is sent"
+            );
+        }
+    }
 
     let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
         &mut db,

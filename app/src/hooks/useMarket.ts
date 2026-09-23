@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import * as api from "../lib/api";
+
 import { recentBlocks, type Block } from "../lib/chain";
 import {
   outcomeOf,
@@ -16,10 +18,16 @@ const POLL_MS = 12_000;
 
 export type Source = "chain" | "stale" | "offline";
 
+/** Whether the balances on screen are the ledger's or this tab's. */
+export type Money = "simulated" | "ledger" | "unreachable";
+
 export interface MarketState {
   readonly source: Source;
   /** How old the blocks behind the market are, in seconds. */
   readonly ageSeconds: number;
+  readonly money: Money;
+  /** Where to send a deposit, once there is a ledger to send it to. */
+  readonly depositAddress: string | null;
   readonly blocks: readonly Block[];
   readonly rounds: readonly Round[];
   readonly position: Position | null;
@@ -55,6 +63,8 @@ export function useMarket() {
   const [elapsed, setElapsed] = useState(0);
   const [source, setSource] = useState<Source>("offline");
   const [ageSeconds, setAgeSeconds] = useState(0);
+  const [money, setMoney] = useState<Money>(api.connected ? "unreachable" : "simulated");
+  const [depositAddress, setDepositAddress] = useState<string | null>(null);
 
   const positionRef = useRef<Position | null>(null);
   positionRef.current = position;
@@ -162,14 +172,57 @@ export function useMarket() {
 
   const shares = useMemo(() => sharesOver(blocks), [blocks]);
 
-  /** Broadcasts the memo. Which round it joins is not ours to say. */
-  const take = useCallback((miner: string, stake: number) => {
-    setPosition({ miner, stake, stage: "sent", confirmedIn: null, target: null });
+  // When there is a ledger, the balance on screen is its balance. Until it
+  // answers, the interface says "unreachable" rather than showing the
+  // simulated one, because a number that looks like money and is not is the
+  // single worst thing this page could put on screen.
+  useEffect(() => {
+    if (!api.connected) return;
+    let alive = true;
+
+    void (async () => {
+      try {
+        const standing =
+          api.heldToken() === null ? await api.join() : await api.standing();
+        if (!alive) return;
+        setBalance(standing.available / 1e8);
+        setDepositAddress(standing.address);
+        setMoney("ledger");
+      } catch {
+        if (alive) setMoney("unreachable");
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  /** Commits a stake. Which round it joins is not ours to say. */
+  const take = useCallback(
+    (miner: string, stake: number) => {
+      if (!api.connected) {
+        setPosition({ miner, stake, stage: "sent", confirmedIn: null, target: null });
+        return;
+      }
+      const target = (tipRef.current || 0) + 2;
+      void api
+        .bet(target, miner, Math.round(stake * 1e8))
+        .then((standing) => {
+          setBalance(standing.available / 1e8);
+          setPosition({ miner, stake, stage: "sent", confirmedIn: null, target: null });
+          setMoney("ledger");
+        })
+        .catch(() => setMoney("unreachable"));
+    },
+    [],
+  );
 
   const state: MarketState = {
     source,
     ageSeconds,
+    money,
+    depositAddress,
     blocks,
     rounds,
     position,

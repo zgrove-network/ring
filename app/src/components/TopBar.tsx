@@ -1,13 +1,14 @@
 import { Mark } from "./Mark";
-import type { Source } from "../hooks/useMarket";
+import type { Money, Source } from "../hooks/useMarket";
 
 interface Props {
   readonly height: number | null;
   readonly source: Source;
   readonly ageSeconds: number;
+  readonly money: Money;
 }
 
-export function TopBar({ height, source, ageSeconds }: Props) {
+export function TopBar({ height, source, ageSeconds, money }: Props) {
   return (
     <header className="topbar">
       <Mark />
@@ -27,11 +28,26 @@ export function TopBar({ height, source, ageSeconds }: Props) {
             ? `mainnet · ${Math.round(ageSeconds / 60) || 1}m old`
             : "explorer offline"}
       </span>
-      {/* "simulated counterparties" could be read as "the others are bots but
-          my money is real". It is not: nothing here touches a wallet. */}
-      <span className="badge sim" title="No wallet is connected and no payment is made. The blocks are real; the stakes are not.">
-        simulation · no real money
-      </span>
+      {/* Whichever of these is true has to be the one on screen. A page
+          showing a balance is read as an account somebody is holding, and
+          saying "no real money" while holding real money is the worse of the
+          two lies. */}
+      {money === "simulated" ? (
+        <span
+          className="badge sim"
+          title="No wallet is connected and no payment is made. The blocks are real; the stakes are not."
+        >
+          simulation · no real money
+        </span>
+      ) : money === "ledger" ? (
+        <span className="badge live" title="Balances here are the ledger's, in ZEC.">
+          real balance
+        </span>
+      ) : (
+        <span className="badge bad" title="There is a ledger, and this page cannot reach it. Nothing shown is a balance.">
+          ledger unreachable
+        </span>
+      )}
     </header>
   );
 }

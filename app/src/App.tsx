@@ -18,7 +18,12 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar height={tip} source={state.source} ageSeconds={state.ageSeconds} />
+      <TopBar
+        height={tip}
+        source={state.source}
+        ageSeconds={state.ageSeconds}
+        money={state.money}
+      />
 
       <main className="body">
         <div className="main-col">
@@ -46,6 +51,8 @@ export default function App() {
             onTake={take}
           />
           <Account
+            money={state.money}
+            depositAddress={state.depositAddress}
             balance={state.balance}
             session={state.session}
             hits={state.hits}

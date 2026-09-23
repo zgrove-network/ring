@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use tower_http::cors::{Any, CorsLayer};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zcash_keys::keys::UnifiedFullViewingKey;
@@ -79,14 +80,31 @@ async fn join(State(server): State<Shared>) -> Result<Json<Joined>, Refusal> {
     rand::rngs::OsRng.fill_bytes(&mut raw);
     let token: String = raw.iter().map(|b| format!("{b:02x}")).collect();
 
-    let index = {
-        let mut ledger = server.ledger.lock().expect("the ledger mutex was poisoned");
+    // A requested index and the diversifier that actually works are not the
+    // same number, and several requests can land on one address. So the
+    // address is resolved first and the index it really came out at is what
+    // gets claimed; if somebody took it in between, step past it and retry.
+    let mut wanted = {
+        let ledger = server.ledger.lock().expect("the ledger mutex was poisoned");
         ledger
-            .claim("web", &token, now())
+            .next_index()
             .map_err(|e| Refusal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
-    let (address, _) = derive(&server.ufvk, index).map_err(bad)?;
+    let (index, address) = loop {
+        let (address, actual) = derive(&server.ufvk, wanted).map_err(bad)?;
+        let taken = {
+            let mut ledger = server.ledger.lock().expect("the ledger mutex was poisoned");
+            ledger.claim_at(actual, "web", &token, now())
+        };
+        match taken {
+            Ok(()) => break (actual, address),
+            Err(_) if actual < u32::MAX => wanted = actual + 1,
+            Err(e) => {
+                return Err(Refusal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+        }
+    };
 
     Ok(Json(Joined {
         index,
@@ -189,6 +207,17 @@ pub async fn run(
         .route("/v1/me", get(me))
         .route("/v1/bet", post(bet))
         .route("/v1/withdraw", post(withdraw))
+        // The market is served from somewhere else entirely — a static host,
+        // a different origin — so the browser has to be told this is allowed.
+        // Any origin, because there is nothing here a stranger's page can do
+        // without a token, and the token is not a cookie the browser would
+        // attach on its own.
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(server);
 
     let listener = tokio::net::TcpListener::bind(bind)
