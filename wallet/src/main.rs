@@ -8,13 +8,23 @@ use orchard::keys::{PreparedIncomingViewingKey, Scope};
 use orchard::note_encryption::IronwoodDomain;
 use rand::rngs::OsRng;
 use zcash_note_encryption::try_note_decryption;
-use zcash_client_backend::data_api::wallet::{decrypt_and_store_transaction, ConfirmationsPolicy};
+use zcash_client_backend::address::Address;
+use zcash_client_backend::data_api::wallet::{
+    create_proposed_transactions, decrypt_and_store_transaction,
+    propose_standard_transfer_to_address, ConfirmationsPolicy, SpendingKeys,
+};
+use zcash_client_backend::wallet::OvkPolicy;
+use zcash_client_backend::fees::StandardFeeRule;
+use zcash_proofs::prover::LocalTxProver;
+use zcash_protocol::value::Zatoshis;
+use zcash_protocol::ShieldedProtocol;
 use zcash_client_backend::data_api::TransactionDataRequest;
 use zcash_client_backend::decrypt_transaction;
 use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
 use zcash_client_backend::keys::UnifiedAddressRequest;
 use zcash_client_backend::proto::service::{
-    compact_tx_streamer_client::CompactTxStreamerClient, BlockId, ChainSpec, TxFilter,
+    compact_tx_streamer_client::CompactTxStreamerClient, BlockId, ChainSpec, RawTransaction,
+    TxFilter,
 };
 use zcash_primitives::transaction::Transaction;
 use zcash_protocol::consensus::{BlockHeight, BranchId};
@@ -268,7 +278,7 @@ async fn main() -> Result<()> {
     // both have to work, and reading argv[0] made the flag shadow it.
     let command = args
         .iter()
-        .find(|a| a.as_str() == "new" || a.as_str() == "scan")
+        .find(|a| matches!(a.as_str(), "new" | "scan" | "send"))
         .map(String::as_str);
 
     match command {
@@ -282,6 +292,134 @@ async fn main() -> Result<()> {
             let data = flag("--data").unwrap_or_else(|| "ring-data".into());
             scan(&network, &ufvk, birthday, PathBuf::from(data)).await
         }
-        _ => bail!("usage: ring-wallet [--testnet] new | ring-wallet [--testnet] scan --ufvk <key> --birthday <height> [--data <dir>]"),
+        Some("send") => {
+            let seed = flag("--seed-file").ok_or_else(|| anyhow!("--seed-file is required"))?;
+            let to = flag("--to").ok_or_else(|| anyhow!("--to is required"))?;
+            let zatoshi: u64 = flag("--zatoshi")
+                .ok_or_else(|| anyhow!("--zatoshi is required"))?
+                .parse()
+                .context("--zatoshi must be a whole number of zatoshi")?;
+            let memo = flag("--memo").unwrap_or_default();
+            let data = flag("--data").unwrap_or_else(|| "ring-data".into());
+            send(&network, PathBuf::from(seed), &to, zatoshi, &memo, PathBuf::from(data)).await
+        }
+        _ => bail!(
+            "usage:\n  ring-wallet [--testnet] new\n  ring-wallet [--testnet] scan --ufvk <key> --birthday <height> [--data <dir>]\n  ring-wallet [--testnet] send --seed-file <path> --to <addr> --zatoshi <n> [--memo <text>] [--data <dir>]"
+        ),
     }
+}
+
+/// Spends from the wallet, with a memo.
+///
+/// This needs the spending key, which the scanner never sees. It is read from
+/// a file holding the seed phrase and nothing else: the point of the split is
+/// that the process which is reachable from the internet cannot do this.
+async fn send(
+    network: &Network,
+    seed_file: PathBuf,
+    to_text: &str,
+    zatoshi: u64,
+    memo_text: &str,
+    data: PathBuf,
+) -> Result<()> {
+    let phrase = std::fs::read_to_string(&seed_file)
+        .with_context(|| format!("reading {}", seed_file.display()))?;
+    let mnemonic = <Mnemonic<English>>::from_phrase(phrase.trim())
+        .map_err(|e| anyhow!("that file does not hold a seed phrase: {e}"))?;
+    let seed = mnemonic.to_seed("");
+    let usk = UnifiedSpendingKey::from_seed(network, &seed, AccountId::ZERO)
+        .context("deriving the spending key")?;
+
+    let to = Address::decode(network, to_text)
+        .ok_or_else(|| anyhow!("that is not an address for this network"))?;
+    let amount = Zatoshis::from_u64(zatoshi).context("that amount is not a value")?;
+    let memo = MemoBytes::from_bytes(memo_text.as_bytes())
+        .map_err(|_| anyhow!("a memo is at most 512 bytes"))?;
+
+    let mut db = WalletDb::for_path(data.join("wallet.sqlite"), *network, SystemClock, OsRng)
+        .context("opening the wallet database")?;
+    let account = *db
+        .get_account_ids()
+        .map_err(|e| anyhow!("{e}"))?
+        .first()
+        .ok_or_else(|| anyhow!("this wallet has no account; run scan first"))?;
+
+    let proposal = propose_standard_transfer_to_address::<_, _, std::convert::Infallible>(
+        &mut db,
+        network,
+        StandardFeeRule::Zip317,
+        account,
+        ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN),
+        &to,
+        amount,
+        Some(memo),
+        None,
+        ShieldedProtocol::Orchard,
+        None,
+        None,
+    )
+    .map_err(|e| anyhow!("planning the payment: {e:?}"))?;
+
+    println!("planned: {} output(s), proving...", proposal.steps().len());
+
+    // Sapling proving needs two parameter files, about fifty megabytes, and
+    // the API asks for the provers whether or not any Sapling note is spent.
+    // Fetched once and cached where every other Zcash tool looks for them.
+    let prover = match LocalTxProver::with_default_location() {
+        Some(prover) => prover,
+        None => {
+            println!("fetching the Sapling parameters (about 50 MB, once)...");
+            zcash_proofs::download_parameters()
+                .map_err(|e| anyhow!("downloading the Sapling parameters: {e}"))?;
+            LocalTxProver::with_default_location()
+                .ok_or_else(|| anyhow!("the parameters downloaded but could not be loaded"))?
+        }
+    };
+
+    let txids = create_proposed_transactions::<_, _, std::convert::Infallible, _, std::convert::Infallible, _>(
+        &mut db,
+        network,
+        &prover,
+        &prover,
+        &SpendingKeys::from_unified_spending_key(usk),
+        OvkPolicy::Sender,
+        &proposal,
+        None,
+    )
+    .map_err(|e| anyhow!("building the payment: {e:?}"))?;
+
+    // Creating a transaction stores it; it does not broadcast it. There is no
+    // send_authorized_transactions here — that helper belongs to another
+    // library — so the raw bytes are read back out and handed to the network.
+    let mut client = CompactTxStreamerClient::connect(endpoint(network))
+        .await
+        .context("reaching lightwalletd")?;
+
+    for txid in &txids {
+        let tx = db
+            .get_transaction(*txid)
+            .map_err(|e| anyhow!("{e}"))?
+            .ok_or_else(|| anyhow!("the wallet built {txid} and then lost it"))?;
+        let mut raw = Vec::new();
+        tx.write(&mut raw).context("serialising the transaction")?;
+
+        let response = client
+            .send_transaction(RawTransaction { data: raw, height: 0 })
+            .await
+            .with_context(|| format!("broadcasting {txid}"))?
+            .into_inner();
+
+        // The server answers with a code and a string, and a non-zero code is
+        // a refusal however friendly the string reads.
+        if response.error_code != 0 {
+            bail!(
+                "the network refused {txid}: code {} {}",
+                response.error_code,
+                response.error_message
+            );
+        }
+        println!("sent {txid}");
+    }
+
+    Ok(())
 }

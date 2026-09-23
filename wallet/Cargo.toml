@@ -24,6 +24,9 @@ zip32 = "0.2"
 # is decrypted here with the same machinery.
 orchard = "0.15"
 zcash_note_encryption = "0.4"
+# Spending shielded funds needs a zk-SNARK proof. Sapling wants parameter
+# files; Orchard builds its key in memory.
+zcash_proofs = { version = "0.30", features = ["local-prover", "download-params"] }
 bip0039 = { version = "0.12", features = ["all-languages"] }
 rand = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
