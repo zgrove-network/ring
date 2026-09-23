@@ -16,6 +16,14 @@ RUN apt-get update \
 # Not root. This process holds a viewing key, which reads every position.
 RUN useradd --uid 10001 --create-home --home-dir /home/ring ring
 COPY --from=build /src/target/release/ring-wallet /usr/local/bin/ring-wallet
+
+# The data directory has to exist in the image, owned by the user that will
+# write to it. Docker gives an empty named volume the ownership it finds here;
+# without this the volume arrives owned by root and a process that is
+# deliberately not root cannot open its own ledger.
+RUN mkdir -p /data && chown ring:ring /data
+VOLUME ["/data"]
+
 USER ring
 WORKDIR /home/ring
 ENTRYPOINT ["ring-wallet"]
