@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The ledger decides who is paid what, so its tests run on every push
+  # rather than whenever somebody remembers.
+  wallet:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wallet
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      # Building this links the whole Zcash stack, which is slow enough that
+      # not caching it would make the run useless to wait for.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: wallet
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+
+  market:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit -p tsconfig.json
+      # The Pages function runs on workers, not in the browser, so it has a
+      # configuration of its own and is checked separately.
+      - run: pnpm exec tsc --noEmit -p functions/tsconfig.json
+      - run: pnpm build

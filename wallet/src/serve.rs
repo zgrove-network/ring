@@ -6,9 +6,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use tower_http::cors::{Any, CorsLayer};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use tower_http::cors::{Any, CorsLayer};
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_protocol::consensus::Network;
 

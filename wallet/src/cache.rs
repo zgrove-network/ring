@@ -67,15 +67,17 @@ impl BlockSource for MemoryBlockCache {
 
 #[async_trait]
 impl BlockCache for MemoryBlockCache {
-    fn get_tip_height(&self, range: Option<&ScanRange>) -> Result<Option<BlockHeight>, Self::Error> {
+    fn get_tip_height(
+        &self,
+        range: Option<&ScanRange>,
+    ) -> Result<Option<BlockHeight>, Self::Error> {
         let held = self.blocks.lock().expect("the cache mutex was poisoned");
         let highest = match range {
             None => held.keys().next_back().copied(),
             Some(range) => held
                 .keys()
                 .copied()
-                .filter(|h| range.block_range().contains(&BlockHeight::from_u32(*h)))
-                .next_back(),
+                .rfind(|h| range.block_range().contains(&BlockHeight::from_u32(*h))),
         };
         Ok(highest.map(BlockHeight::from_u32))
     }

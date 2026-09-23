@@ -3,41 +3,41 @@ mod cache;
 mod ledger;
 mod serve;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use bip0039::{Count, English, Mnemonic};
 use orchard::keys::{PreparedIncomingViewingKey, Scope};
 use orchard::note_encryption::IronwoodDomain;
 use rand::rngs::OsRng;
-use zcash_note_encryption::try_note_decryption;
 use zcash_client_backend::address::Address;
 use zcash_client_backend::data_api::wallet::{
     create_proposed_transactions, decrypt_and_store_transaction,
     propose_standard_transfer_to_address, ConfirmationsPolicy, SpendingKeys,
 };
-use zcash_client_backend::wallet::OvkPolicy;
-use zcash_client_backend::fees::StandardFeeRule;
-use zcash_proofs::prover::LocalTxProver;
-use zcash_protocol::value::Zatoshis;
-use zcash_protocol::ShieldedProtocol;
 use zcash_client_backend::data_api::TransactionDataRequest;
-use zcash_client_backend::decrypt_transaction;
 use zcash_client_backend::data_api::{AccountBirthday, AccountPurpose, WalletRead, WalletWrite};
+use zcash_client_backend::decrypt_transaction;
+use zcash_client_backend::fees::StandardFeeRule;
 use zcash_client_backend::keys::UnifiedAddressRequest;
 use zcash_client_backend::proto::service::{
     compact_tx_streamer_client::CompactTxStreamerClient, BlockId, ChainSpec, RawTransaction,
     TxFilter,
 };
-use zcash_primitives::transaction::Transaction;
-use zcash_protocol::consensus::{BlockHeight, BranchId};
-use zcash_protocol::memo::{Memo, MemoBytes};
 use zcash_client_backend::sync;
+use zcash_client_backend::wallet::OvkPolicy;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::WalletDb;
 use zcash_keys::address::UnifiedAddress;
 use zcash_keys::keys::UnifiedFullViewingKey;
+use zcash_note_encryption::try_note_decryption;
+use zcash_primitives::transaction::Transaction;
+use zcash_proofs::prover::LocalTxProver;
+use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::memo::{Memo, MemoBytes};
+use zcash_protocol::value::Zatoshis;
+use zcash_protocol::ShieldedPool;
 
 use crate::cache::MemoryBlockCache;
 use crate::ledger::{Deposit, Ledger};
@@ -231,7 +231,11 @@ async fn scan(
         // mirrored id back, which is how it was caught.
         let hash = txid.as_ref().to_vec();
         let raw = match client
-            .get_transaction(TxFilter { block: None, index: 0, hash })
+            .get_transaction(TxFilter {
+                block: None,
+                index: 0,
+                hash,
+            })
             .await
         {
             Ok(response) => response.into_inner(),
@@ -253,7 +257,9 @@ async fn scan(
 
         // Read it before storing it: the stored form keeps the note but the
         // memo is only handed back here, and the memo is the whole point.
-        let ufvks = db.get_unified_full_viewing_keys().map_err(|e| anyhow!("{e}"))?;
+        let ufvks = db
+            .get_unified_full_viewing_keys()
+            .map_err(|e| anyhow!("{e}"))?;
         let decrypted = decrypt_transaction(network, Some(height), None, &tx, &ufvks);
         for (index, output) in decrypted.sapling_outputs().iter().enumerate() {
             received.push(Deposit {
@@ -293,8 +299,7 @@ async fn scan(
                 let ivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
                 for (index, action) in bundle.actions().iter().enumerate() {
                     let domain = IronwoodDomain::for_action(action);
-                    if let Some((note, address, memo)) =
-                        try_note_decryption(&domain, &ivk, action)
+                    if let Some((note, address, memo)) = try_note_decryption(&domain, &ivk, action)
                     {
                         let raw = address.to_raw_address_bytes();
                         let at = issued.iter().find(|(a, _)| *a == raw).map(|(_, i)| *i);
@@ -305,7 +310,8 @@ async fn scan(
                             zatoshi: note.value().inner(),
                             height: u32::from(height),
                             memo: describe(
-                                &MemoBytes::from_bytes(&memo).unwrap_or_else(|_| MemoBytes::empty()),
+                                &MemoBytes::from_bytes(&memo)
+                                    .unwrap_or_else(|_| MemoBytes::empty()),
                             ),
                         });
                     }
@@ -364,50 +370,6 @@ async fn scan(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use bip0039::{Count, English, Mnemonic};
-
-    /// Two depositors must never be handed one address.
-    ///
-    /// A diversifier is only usable when it works for every receiver in the
-    /// address, and Sapling rejects about half of them, so `find_address`
-    /// walks forward — and consecutive requests collapse onto the same
-    /// answer. Asked for 5, 6 and 7 on a real key, all three came back with
-    /// one address. Filed under three names, three people's deposits would
-    /// have been inseparable.
-    #[test]
-    fn distinct_indices_never_share_an_address() {
-        let network = Network::TestNetwork;
-        let mnemonic = <Mnemonic<English>>::generate(Count::Words24);
-        let usk =
-            UnifiedSpendingKey::from_seed(&network, &mnemonic.to_seed(""), AccountId::ZERO).unwrap();
-        let ufvk = usk.to_unified_full_viewing_key();
-
-        let mut seen = std::collections::HashMap::new();
-        let mut collapsed = 0;
-        for wanted in 0..80u32 {
-            let (address, actual) = derive(&ufvk, wanted).unwrap();
-            let encoded = address.encode(&network);
-            if actual != wanted {
-                collapsed += 1;
-            }
-            if let Some(previous) = seen.insert(encoded.clone(), actual) {
-                assert_eq!(
-                    previous, actual,
-                    "one address came back under two indices, {previous} and {actual}"
-                );
-            }
-        }
-
-        assert!(
-            collapsed > 0,
-            "no request resolved to a different index; this key would not have caught the bug"
-        );
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // rustls refuses to guess when more than one provider could be linked.
@@ -415,7 +377,10 @@ async fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| -> Option<String> {
-        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
     };
 
     // Testnet is not a default. A key made on the wrong network cannot
@@ -434,7 +399,14 @@ async fn main() -> Result<()> {
         .find(|a| {
             matches!(
                 a.as_str(),
-                "new" | "scan" | "send" | "address" | "balances" | "withdraw" | "pay" | "serve"
+                "new"
+                    | "scan"
+                    | "send"
+                    | "address"
+                    | "balances"
+                    | "withdraw"
+                    | "pay"
+                    | "serve"
                     | "close"
             )
         })
@@ -589,7 +561,8 @@ async fn close(data: PathBuf, source: &str) -> Result<()> {
                 let miner = blocks::miner_of(&block);
                 let settled = ledger.settle(id, &miner, now())?;
                 println!(
-                    "  round {id}: block {height} taken by {miner}; {} staked, {} to {} winner(s), {} kept{}",
+                    "  round {id}: block {height} taken by {}; {} staked, {} to {} winner(s), {} kept{}",
+                    settled.outcome,
                     settled.staked,
                     settled.paid,
                     settled.winners,
@@ -611,11 +584,11 @@ fn now() -> i64 {
 
 async fn spend(
     network: &Network,
-    seed_file: &PathBuf,
+    seed_file: &Path,
     to_text: &str,
     zatoshi: u64,
     memo_text: &str,
-    data: &PathBuf,
+    data: &Path,
 ) -> Result<String> {
     let phrase = std::fs::read_to_string(seed_file)
         .with_context(|| format!("reading {}", seed_file.display()))?;
@@ -678,7 +651,7 @@ async fn spend(
         amount,
         Some(memo),
         None,
-        ShieldedProtocol::Orchard,
+        ShieldedPool::Orchard,
         None,
         None,
     )
@@ -693,14 +666,21 @@ async fn spend(
         Some(prover) => prover,
         None => {
             println!("fetching the Sapling parameters (about 50 MB, once)...");
-            zcash_proofs::download_parameters()
+            zcash_proofs::download_sapling_parameters(None)
                 .map_err(|e| anyhow!("downloading the Sapling parameters: {e}"))?;
             LocalTxProver::with_default_location()
                 .ok_or_else(|| anyhow!("the parameters downloaded but could not be loaded"))?
         }
     };
 
-    let txids = create_proposed_transactions::<_, _, std::convert::Infallible, _, std::convert::Infallible, _>(
+    let txids = create_proposed_transactions::<
+        _,
+        _,
+        std::convert::Infallible,
+        _,
+        std::convert::Infallible,
+        _,
+    >(
         &mut db,
         network,
         &prover,
@@ -719,6 +699,11 @@ async fn spend(
         .await
         .context("reaching lightwalletd")?;
 
+    // Every one of them, not the first. A proposal can come back as more
+    // than one transaction, and returning after the first would leave the
+    // rest built, their notes marked spent, and nothing on the chain — the
+    // same fault as printing "sent" without broadcasting, in another shape.
+    let mut last = None;
     for txid in &txids {
         let tx = db
             .get_transaction(*txid)
@@ -726,10 +711,12 @@ async fn spend(
             .ok_or_else(|| anyhow!("the wallet built {txid} and then lost it"))?;
         let mut raw = Vec::new();
         tx.write(&mut raw).context("serialising the transaction")?;
-        let _ = &raw;
 
         let response = client
-            .send_transaction(RawTransaction { data: raw, height: 0 })
+            .send_transaction(RawTransaction {
+                data: raw,
+                height: 0,
+            })
             .await
             .with_context(|| format!("broadcasting {txid}"))?
             .into_inner();
@@ -743,8 +730,66 @@ async fn spend(
                 response.error_message
             );
         }
-        return Ok(txid.to_string());
+        last = Some(txid.to_string());
     }
 
-    anyhow::bail!("nothing was built")
+    match last {
+        None => bail!("nothing was built"),
+        Some(txid) => {
+            if txids.len() > 1 {
+                // A withdrawal records one transaction id. More than one
+                // means the record names only part of what was sent, which
+                // somebody has to know rather than discover later.
+                eprintln!(
+                    "  warning: this payment took {} transactions; only {txid} is written down",
+                    txids.len()
+                );
+            }
+            Ok(txid)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bip0039::{Count, English, Mnemonic};
+
+    /// Two depositors must never be handed one address.
+    ///
+    /// A diversifier is only usable when it works for every receiver in the
+    /// address, and Sapling rejects about half of them, so `find_address`
+    /// walks forward — and consecutive requests collapse onto the same
+    /// answer. Asked for 5, 6 and 7 on a real key, all three came back with
+    /// one address. Filed under three names, three people's deposits would
+    /// have been inseparable.
+    #[test]
+    fn distinct_indices_never_share_an_address() {
+        let network = Network::TestNetwork;
+        let mnemonic = <Mnemonic<English>>::generate(Count::Words24);
+        let usk = UnifiedSpendingKey::from_seed(&network, &mnemonic.to_seed(""), AccountId::ZERO)
+            .unwrap();
+        let ufvk = usk.to_unified_full_viewing_key();
+
+        let mut seen = std::collections::HashMap::new();
+        let mut collapsed = 0;
+        for wanted in 0..80u32 {
+            let (address, actual) = derive(&ufvk, wanted).unwrap();
+            let encoded = address.encode(&network);
+            if actual != wanted {
+                collapsed += 1;
+            }
+            if let Some(previous) = seen.insert(encoded.clone(), actual) {
+                assert_eq!(
+                    previous, actual,
+                    "one address came back under two indices, {previous} and {actual}"
+                );
+            }
+        }
+
+        assert!(
+            collapsed > 0,
+            "no request resolved to a different index; this key would not have caught the bug"
+        );
+    }
 }

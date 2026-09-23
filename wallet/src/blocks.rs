@@ -1,13 +1,12 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
-/// Who took a block, read from its coinbase.
-///
-/// This is the same reading the market shows, and it has to be: a player who
-/// watched "Foundry" take a block and then finds the ledger paid "unsigned"
-/// has been told two different truths about the same money. The market's copy
-/// is in TypeScript and describes; this one decides. They are checked against
-/// each other by the fixtures below, which come from the chain.
+// Who took a block, read from its coinbase.
+//
+// This is the same reading the market shows, and it has to be: a player who
+// watched "Foundry" take a block and then finds the ledger paid "unsigned"
+// has been told two different truths about the same money. The market's copy
+// is in TypeScript and describes; this one decides.
 
 /// Blocks whose coinbase carries no recognisable name — about half of them,
 /// which lines up with the two largest pools by published share not signing
@@ -98,7 +97,18 @@ pub fn at_height(source: &str, height: u32) -> Result<Option<Raw>> {
     }
     let answer: Answer = serde_json::from_str(response.as_str()?)
         .context("the explorer's answer was not a block list")?;
-    Ok(answer.data.into_iter().next())
+
+    match answer.data.into_iter().next() {
+        None => Ok(None),
+        // Asked about one height and told about another. Settling on it
+        // would pay out against the wrong block, so it is refused rather
+        // than trusted.
+        Some(block) if block.id != height => Err(anyhow!(
+            "asked the explorer for block {height} and it answered about {}",
+            block.id
+        )),
+        Some(block) => Ok(Some(block)),
+    }
 }
 
 #[cfg(test)]
@@ -119,8 +129,14 @@ mod tests {
 
     #[test]
     fn a_name_in_the_coinbase_is_the_miner() {
-        assert_eq!(miner_of(&row(&hex_of("mined by 2Miners pool"), None)), "2Miners");
-        assert_eq!(miner_of(&row(&hex_of("\u{1}\u{2}Foundry USA"), None)), "Foundry");
+        assert_eq!(
+            miner_of(&row(&hex_of("mined by 2Miners pool"), None)),
+            "2Miners"
+        );
+        assert_eq!(
+            miner_of(&row(&hex_of("\u{1}\u{2}Foundry USA"), None)),
+            "Foundry"
+        );
         assert_eq!(miner_of(&row(&hex_of("viabtc.com"), None)), "ViaBTC");
     }
 
@@ -131,7 +147,11 @@ mod tests {
         assert_eq!(miner_of(&row(&hex_of("just some bytes"), None)), UNSIGNED);
         assert_eq!(miner_of(&row("", None)), UNSIGNED);
         assert_eq!(
-            miner_of(&Raw { id: 1, coinbase_data_hex: None, guessed_miner: None }),
+            miner_of(&Raw {
+                id: 1,
+                coinbase_data_hex: None,
+                guessed_miner: None
+            }),
             UNSIGNED
         );
     }
@@ -140,7 +160,10 @@ mod tests {
     fn the_explorers_own_guess_wins_when_it_has_one() {
         assert_eq!(miner_of(&row(&hex_of("2Miners"), Some("Luxor"))), "Luxor");
         // But "unknown" is not a guess.
-        assert_eq!(miner_of(&row(&hex_of("2Miners"), Some("unknown"))), "2Miners");
+        assert_eq!(
+            miner_of(&row(&hex_of("2Miners"), Some("unknown"))),
+            "2Miners"
+        );
         assert_eq!(miner_of(&row(&hex_of("2Miners"), Some(""))), "2Miners");
     }
 

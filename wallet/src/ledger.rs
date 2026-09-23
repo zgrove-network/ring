@@ -41,8 +41,10 @@ impl Ledger {
     /// something else. Found exactly that way. The version is recorded, and
     /// each step runs once.
     fn prepare(&self) -> Result<()> {
-        let version: u32 =
-            self.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
+        let version: u32 = self
+            .db
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap_or(0);
 
         if version > SCHEMA_VERSION {
             anyhow::bail!(
@@ -85,8 +87,9 @@ impl Ledger {
     }
 
     fn create_tables(&self) -> Result<()> {
-        self.db.execute_batch(
-            "PRAGMA journal_mode = WAL;
+        self.db
+            .execute_batch(
+                "PRAGMA journal_mode = WAL;
              -- Three processes write here: the API takes bets, the scanner
              -- records deposits, the closer pays rounds. Without this the
              -- second one to arrive fails immediately with \"database is
@@ -165,8 +168,8 @@ impl Ledger {
                round_id INTEGER PRIMARY KEY REFERENCES round(id),
                zatoshi  INTEGER NOT NULL
              );",
-        )
-        .context("preparing the ledger")?;
+            )
+            .context("preparing the ledger")?;
         Ok(())
     }
 
@@ -296,7 +299,7 @@ impl Ledger {
     }
 
     /// What each depositor has put in, deepest first.
-    pub fn balances(&self) -> Result<Vec<(u32, Option<String>, u64, u32)>> {
+    pub fn balances(&self) -> Result<Vec<Standing>> {
         let mut statement = self.db.prepare(
             "SELECT d.address_index,
                     (SELECT label FROM depositor p WHERE p.address_index = d.address_index),
@@ -308,7 +311,12 @@ impl Ledger {
         )?;
         let rows = statement
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? as u64, row.get(3)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)? as u64,
+                    row.get(3)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
@@ -381,7 +389,9 @@ impl Ledger {
         zatoshi: u64,
         at: i64,
     ) -> Result<()> {
-        let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let tx = self
+            .db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         let settled: Option<String> = tx.query_row(
             "SELECT outcome FROM round WHERE id = ?1",
@@ -394,16 +404,24 @@ impl Ledger {
 
         let deposited: i64 = tx.query_row(
             "SELECT COALESCE(SUM(zatoshi), 0) FROM deposit WHERE address_index = ?1",
-            params![address_index], |r| r.get(0))?;
+            params![address_index],
+            |r| r.get(0),
+        )?;
         let committed: i64 = tx.query_row(
             "SELECT COALESCE(SUM(zatoshi), 0) FROM bet WHERE address_index = ?1",
-            params![address_index], |r| r.get(0))?;
+            params![address_index],
+            |r| r.get(0),
+        )?;
         let returned: i64 = tx.query_row(
             "SELECT COALESCE(SUM(zatoshi), 0) FROM payout WHERE address_index = ?1",
-            params![address_index], |r| r.get(0))?;
+            params![address_index],
+            |r| r.get(0),
+        )?;
         let leaving: i64 = tx.query_row(
             "SELECT COALESCE(SUM(zatoshi), 0) FROM withdrawal WHERE address_index = ?1",
-            params![address_index], |r| r.get(0))?;
+            params![address_index],
+            |r| r.get(0),
+        )?;
 
         let available = deposited - committed + returned - leaving;
         let wanted = i64::try_from(zatoshi).context("that stake is not a value")?;
@@ -438,14 +456,26 @@ impl Ledger {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         let sums: [i64; 4] = [
-            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM deposit WHERE address_index=?1",
-                params![address_index], |r| r.get(0))?,
-            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM bet WHERE address_index=?1",
-                params![address_index], |r| r.get(0))?,
-            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM payout WHERE address_index=?1",
-                params![address_index], |r| r.get(0))?,
-            tx.query_row("SELECT COALESCE(SUM(zatoshi),0) FROM withdrawal WHERE address_index=?1",
-                params![address_index], |r| r.get(0))?,
+            tx.query_row(
+                "SELECT COALESCE(SUM(zatoshi),0) FROM deposit WHERE address_index=?1",
+                params![address_index],
+                |r| r.get(0),
+            )?,
+            tx.query_row(
+                "SELECT COALESCE(SUM(zatoshi),0) FROM bet WHERE address_index=?1",
+                params![address_index],
+                |r| r.get(0),
+            )?,
+            tx.query_row(
+                "SELECT COALESCE(SUM(zatoshi),0) FROM payout WHERE address_index=?1",
+                params![address_index],
+                |r| r.get(0),
+            )?,
+            tx.query_row(
+                "SELECT COALESCE(SUM(zatoshi),0) FROM withdrawal WHERE address_index=?1",
+                params![address_index],
+                |r| r.get(0),
+            )?,
         ];
         let available = sums[0] - sums[1] + sums[2] - sums[3];
         let wanted = i64::try_from(zatoshi).context("that amount is not a value")?;
@@ -490,7 +520,11 @@ impl Ledger {
         if changed != 1 {
             let existing: Option<String> = self
                 .db
-                .query_row("SELECT txid FROM withdrawal WHERE id = ?1", params![id], |r| r.get(0))
+                .query_row(
+                    "SELECT txid FROM withdrawal WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
                 .unwrap_or(None);
             match existing {
                 Some(previous) => anyhow::bail!("withdrawal {id} is already paid by {previous}"),
@@ -500,6 +534,10 @@ impl Ledger {
         Ok(())
     }
 }
+
+/// One line of `balances`: which address, who holds it, how much, how many
+/// deposits made it up.
+pub type Standing = (u32, Option<String>, u64, u32);
 
 /// What shape this build expects the ledger to be in.
 const SCHEMA_VERSION: u32 = 2;
@@ -555,9 +593,8 @@ impl Ledger {
         }
 
         let bets: Vec<(u32, String, i64)> = {
-            let mut q = tx.prepare(
-                "SELECT address_index, outcome, zatoshi FROM bet WHERE round_id = ?1",
-            )?;
+            let mut q =
+                tx.prepare("SELECT address_index, outcome, zatoshi FROM bet WHERE round_id = ?1")?;
             let rows = q
                 .query_map(params![round_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -593,9 +630,10 @@ impl Ledger {
                 // Their stake back, plus their share of what the others lost.
                 // Widened first: a stake and a pool are each up to the money
                 // supply in zatoshi, and their product does not fit in i64.
-                let share =
-                    i64::try_from(i128::from(distributable) * i128::from(*stake) / i128::from(winner_pool))
-                        .context("a share that large cannot be paid")?;
+                let share = i64::try_from(
+                    i128::from(distributable) * i128::from(*stake) / i128::from(winner_pool),
+                )
+                .context("a share that large cannot be paid")?;
                 let amount = stake + share;
                 tx.execute(
                     "INSERT INTO payout (round_id, address_index, zatoshi) VALUES (?1, ?2, ?3)",
@@ -639,25 +677,19 @@ impl Ledger {
 }
 
 impl Ledger {
-    /// The highest block this book has recorded a deposit from.
-    ///
-    /// Compared against how far the wallet has scanned, this is what says
-    /// whether the book is complete or merely not empty.
-    pub fn recorded_to(&self) -> Result<Option<u32>> {
-        let height: Option<i64> =
-            self.db.query_row("SELECT MAX(height) FROM deposit", [], |r| r.get(0))?;
-        Ok(height.map(|h| h as u32))
-    }
-
     pub fn is_empty(&self) -> Result<bool> {
-        let count: i64 = self.db.query_row("SELECT COUNT(*) FROM deposit", [], |r| r.get(0))?;
+        let count: i64 = self
+            .db
+            .query_row("SELECT COUNT(*) FROM deposit", [], |r| r.get(0))?;
         Ok(count == 0)
     }
 
     pub fn total(&self) -> Result<u64> {
-        let total: i64 = self
-            .db
-            .query_row("SELECT COALESCE(SUM(zatoshi), 0) FROM deposit", [], |r| r.get(0))?;
+        let total: i64 =
+            self.db
+                .query_row("SELECT COALESCE(SUM(zatoshi), 0) FROM deposit", [], |r| {
+                    r.get(0)
+                })?;
         Ok(total as u64)
     }
 }
@@ -804,7 +836,11 @@ mod tests {
             let mut rng = seed.wrapping_mul(7919);
             let mut ledger = book();
             let players = 2 + (next(&mut rng) % 6) as u32;
-            let purse = if seed % 2 == 0 { 400_000_000_000_000u64 } else { 1_000_000u64 };
+            let purse = if seed % 2 == 0 {
+                400_000_000_000_000u64
+            } else {
+                1_000_000u64
+            };
             for index in 0..players {
                 fund(&ledger, index, purse);
             }
@@ -880,7 +916,10 @@ mod tests {
         fund(&ledger, 0, 500);
         let round = ledger.open_round(10).unwrap();
 
-        assert!(ledger.place(round, 0, "Foundry", 501, 0).is_err(), "overdrawn");
+        assert!(
+            ledger.place(round, 0, "Foundry", 501, 0).is_err(),
+            "overdrawn"
+        );
         ledger.place(round, 0, "Foundry", 500, 0).unwrap();
 
         let second = ledger.open_round(11).unwrap();
@@ -930,7 +969,11 @@ mod tests {
         // A copy of the file must not be a way to collect anyone's balance.
         let stored: String = ledger
             .db
-            .query_row("SELECT token_hash FROM depositor WHERE address_index = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT token_hash FROM depositor WHERE address_index = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_ne!(stored, "token-bbb");
         assert!(!stored.contains("token"), "the token itself is in the file");
@@ -943,7 +986,9 @@ mod tests {
         let mut ledger = book();
         let mut seen = std::collections::HashSet::new();
         for n in 0..200 {
-            let index = ledger.claim(&format!("p{n}"), &format!("token-{n}"), 0).unwrap();
+            let index = ledger
+                .claim(&format!("p{n}"), &format!("token-{n}"), 0)
+                .unwrap();
             assert!(seen.insert(index), "address {index} handed out twice");
         }
         assert_eq!(seen.len(), 200);
@@ -962,7 +1007,10 @@ mod tests {
 
         ledger
             .db
-            .execute("DELETE FROM depositor WHERE address_index = ?1", params![second])
+            .execute(
+                "DELETE FROM depositor WHERE address_index = ?1",
+                params![second],
+            )
             .unwrap();
 
         let next = ledger.claim("fourth", "token-d", 0).unwrap();
@@ -1037,13 +1085,19 @@ mod tests {
         let mut ledger = book();
         fund(&ledger, 0, 1000);
 
-        ledger.request_withdrawal(0, 600, "utest1somewhere", 0).unwrap();
+        ledger
+            .request_withdrawal(0, 600, "utest1somewhere", 0)
+            .unwrap();
         assert_eq!(ledger.available(0).unwrap(), 400, "debited before sending");
         assert!(
-            ledger.request_withdrawal(0, 500, "utest1somewhere", 0).is_err(),
+            ledger
+                .request_withdrawal(0, 500, "utest1somewhere", 0)
+                .is_err(),
             "only 400 is left"
         );
-        ledger.request_withdrawal(0, 400, "utest1somewhere", 0).unwrap();
+        ledger
+            .request_withdrawal(0, 400, "utest1somewhere", 0)
+            .unwrap();
         assert_eq!(ledger.available(0).unwrap(), 0);
     }
 
@@ -1052,7 +1106,9 @@ mod tests {
         // Nothing on a shielded chain brings the second one back.
         let mut ledger = book();
         fund(&ledger, 0, 1000);
-        let id = ledger.request_withdrawal(0, 500, "utest1somewhere", 0).unwrap();
+        let id = ledger
+            .request_withdrawal(0, 500, "utest1somewhere", 0)
+            .unwrap();
 
         ledger.mark_sent(id, "aa".repeat(32).as_str(), 0).unwrap();
         let second = ledger.mark_sent(id, "bb".repeat(32).as_str(), 0);
@@ -1069,8 +1125,12 @@ mod tests {
         let round = ledger.open_round(10).unwrap();
         ledger.place(round, 0, "Foundry", 800, 0).unwrap();
 
-        assert!(ledger.request_withdrawal(0, 300, "utest1somewhere", 0).is_err());
-        ledger.request_withdrawal(0, 200, "utest1somewhere", 0).unwrap();
+        assert!(ledger
+            .request_withdrawal(0, 300, "utest1somewhere", 0)
+            .is_err());
+        ledger
+            .request_withdrawal(0, 200, "utest1somewhere", 0)
+            .unwrap();
 
         // And what the round returns is withdrawable afterwards.
         ledger.settle(round, "Foundry", 0).unwrap();
